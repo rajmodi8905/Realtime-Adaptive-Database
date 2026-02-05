@@ -233,28 +233,7 @@ main                ← stable, passing CI
 
 ---
 
-## 📋 Assignment Roadmap
 
-| # | Assignment | Status | Deadline |
-|---|---|---|---|
-| 1 | Adaptive Ingestion & Hybrid Backend Placement | 🔄 In Progress | **Feb 15, 2026** |
-| 2 | Dashboard & Schema Inference Visualization | ⬜ Not Started | TBD |
-| 3 | Query Processing, Joins & ACID Validation | ⬜ Not Started | TBD |
-| 4 | Final Dashboard & Performance Testing | ⬜ Not Started | TBD |
-
----
-
-## 👥 Team
-
-| Name | Topic | Responsibilities |
-|------|-------|------------------|
-| Member 1 | Topic 1 | Normalization (FieldNormalizer, TypeDetector, RecordNormalizer) |
-| Member 2 | Topic 2 | Analysis & Classification (FieldAnalyzer, Classifier) |
-| Member 3 | Topic 3 | Storage (MySQLClient, MongoClient, RecordRouter) |
-| Member 4 | Topic 4 | Persistence (MetadataStore) + Config |
-| Member 5 | Orchestrator | IngestAndClassify, CLI, Integration Tests |
-
----
 
 ## 📖 References
 
