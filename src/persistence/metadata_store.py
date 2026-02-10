@@ -77,6 +77,6 @@
 #   ├── name_mappings.json  → {original_name: canonical_name}
 #   └── state.json          → {total_records, last_flush, ...}
 #
-# ==============================================
+# =============================================
 
 pass
