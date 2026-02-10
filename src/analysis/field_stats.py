@@ -51,4 +51,131 @@
 #
 # ==============================================
 
+from dataclasses import dataclass, field
+from typing import Any, Dict, Set, List, Optional
+
+
+@dataclass
+class FieldStats:
+    """
+    Holds observed statistics for a single field across many records.
+    """
+
+    # --- Core identity ---
+    name: str # The name of the field whose stats we are storing
+
+    # --- Counters ---
+
+    presence_count: int = 0  # How many times the field has occured in records
+
+    type_counts: Dict[str, int] = field(default_factory=dict)
+    # Counts of the distinct types the field has come in e.g. "int" : 10, "str" : 3
+
+    null_count: int = 0  # How many times is the field value NULL or None
+
+    # --- Uniqueness tracking ---
+    unique_values: Set[Any] = field(default_factory=set)
+    #Stores unique values of the fields up till a max limit
+    max_unique_tracked: int = 1000 # Max number of unique values that can be stored
+
+    # --- Structure info ---
+    is_nested: bool = False #Specifies if the value of the field is a dict or a list or a flat value
+
+    # --- Debugging / inspection ---
+    sample_values: List[Any] = field(default_factory=list) #List of sample values for debugging
+    max_samples: int = 5 # Max number of samples
+
+    # ======================================
+    # Update logic
+    # ======================================
+    def update(self, value: Any, detected_type: str) -> None:
+        """
+        Update statistics based on a newly observed value.
+        """
+
+        # Field appeared in this record
+        self.presence_count += 1
+
+        # Track type frequency
+        self.type_counts[detected_type] = (
+            self.type_counts.get(detected_type, 0) + 1
+        )
+
+        # Track nulls
+        if value is None:
+            self.null_count += 1
+            return
+
+        # Track nesting
+        if isinstance(value, (dict, list)):
+            self.is_nested = True
+
+        # Track unique values (bounded)
+        if len(self.unique_values) < self.max_unique_tracked:
+            self.unique_values.add(value)
+
+        # Track sample values (small, bounded)
+        if len(self.sample_values) < self.max_samples:
+            self.sample_values.append(value)
+
+    # ======================================
+    # Computed properties
+    # ======================================
+    @property
+    def dominant_type(self) -> Optional[str]:
+        """
+        Return the most frequently observed type.
+        """
+        if not self.type_counts:
+            return None
+        return max(self.type_counts, key=self.type_counts.get)
+
+    @property
+    def type_stability(self) -> float:
+        """
+        Fraction of observations that match the dominant type.
+        """
+        if not self.type_counts or self.presence_count == 0:
+            return 0.0
+        dominant = self.type_counts[self.dominant_type]
+        return dominant / self.presence_count
+
+    @property
+    def unique_ratio(self) -> float:
+        """
+        Ratio of unique values to total appearances.
+        """
+        if self.presence_count == 0:
+            return 0.0
+        return len(self.unique_values) / self.presence_count
+
+    # ======================================
+    # Serialization
+    # ======================================
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert stats to a serializable dictionary.
+        """
+        return {
+            "name": self.name,
+            "presence_count": self.presence_count,
+            "type_counts": dict(self.type_counts),
+            "null_count": self.null_count,
+            "unique_count": len(self.unique_values),
+            "is_nested": self.is_nested,
+            "sample_values": list(self.sample_values),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FieldStats":
+        """
+        Reconstruct FieldStats from stored metadata.
+        """
+        fs = cls(name=data["name"]) # Creates a class instance using the "name" from metadata
+        fs.presence_count = data.get("presence_count", 0)
+        fs.type_counts = data.get("type_counts", {})
+        fs.null_count = data.get("null_count", 0)
+        fs.is_nested = data.get("is_nested", False)
+        fs.sample_values = data.get("sample_values", [])
+        return fs
 pass
