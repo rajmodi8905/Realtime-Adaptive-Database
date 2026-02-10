@@ -12,3 +12,14 @@
 # - record_router.py   → Splits a record and routes parts to the right DB
 #
 # ==============================================
+
+from .mysql_client import MySQLClient
+from .mongo_client import MongoClient
+from .record_router import RecordRouter, RouteResult
+
+__all__ = [
+    "MySQLClient",
+    "MongoClient",
+    "RecordRouter",
+    "RouteResult"
+]
