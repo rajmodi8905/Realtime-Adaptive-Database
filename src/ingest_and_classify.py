@@ -111,4 +111,375 @@
 #
 # ==============================================
 
-pass
+import time
+from datetime import datetime
+from typing import Optional
+
+from src.config import AppConfig, get_config
+from src.normalization.field_normalizer import FieldNormalizer
+from src.normalization.type_detector import TypeDetector
+from src.normalization.record_normalizer import RecordNormalizer
+from src.analysis.field_analyzer import FieldAnalyzer
+from src.analysis.classifier import Classifier
+from src.analysis.decision import PlacementDecision, ClassificationThresholds
+from src.storage.mysql_client import MySQLClient
+from src.storage.mongo_client import MongoClient
+from src.storage.record_router import RecordRouter
+from src.persistence.metadata_store import MetadataStore
+
+
+class IngestAndClassify:
+    """
+    Main pipeline orchestrator that integrates all 4 topics:
+    1. Normalization
+    2. Analysis & Classification
+    3. Storage
+    4. Persistence
+    """
+
+    def __init__(self, config: Optional[AppConfig] = None):
+        """
+        Initialize the complete pipeline with all components.
+        
+        Args:
+            config: Application configuration. If None, loads from environment.
+        
+        USES:
+            - Topic 1 (normalization/): FieldNormalizer, TypeDetector, RecordNormalizer
+            - Topic 2 (analysis/): FieldAnalyzer, Classifier, ClassificationThresholds
+            - Topic 3 (storage/): MySQLClient, MongoClient, RecordRouter
+            - Topic 4 (persistence/): MetadataStore
+        """
+        # Load configuration
+        self._config = config or get_config()
+        
+        # TOPIC 1: Normalization
+        self._field_normalizer = FieldNormalizer()
+        self._type_detector = TypeDetector()
+        self._record_normalizer = RecordNormalizer(
+            self._field_normalizer,
+            self._type_detector
+        )
+        
+        # TOPIC 2: Analysis & Classification
+        self._field_analyzer = FieldAnalyzer(self._type_detector)
+        thresholds = ClassificationThresholds()
+        self._classifier = Classifier(thresholds)
+        
+        # TOPIC 3: Storage
+        self._mysql_client = MySQLClient(self._config.mysql)
+        self._mongo_client = MongoClient(self._config.mongo)
+        self._record_router = RecordRouter(
+            self._mysql_client,
+            self._mongo_client
+        )
+        
+        # TOPIC 4: Persistence
+        self._metadata_store = MetadataStore(self._config.metadata_dir)
+        
+        # Internal state
+        self._buffer: list[dict] = []
+        self._buffer_size = self._config.buffer.buffer_size
+        self._buffer_timeout = self._config.buffer.buffer_timeout_seconds
+        self._last_flush_time = time.time()
+        self._total_records = 0
+        self._decisions: dict[str, PlacementDecision] = {}
+        
+        # Load previous state if exists
+        self._load_previous_state()
+        
+        print(f"✓ Pipeline initialized (buffer size: {self._buffer_size}, timeout: {self._buffer_timeout}s)")
+        if self._decisions:
+            print(f"✓ Loaded {len(self._decisions)} previous decisions from metadata")
+
+    def ingest(self, raw_record: dict) -> None:
+        """
+        Process a single raw JSON record.
+        
+        Args:
+            raw_record: Raw JSON record from the data stream.
+        
+        USES:
+            - Topic 1 (normalization/): RecordNormalizer.normalize()
+        """
+        # TOPIC 1: Normalize the record
+        normalized = self._record_normalizer.normalize(raw_record)
+        
+        # Add to buffer
+        self._buffer.append(normalized)
+        
+        # Check if we should flush
+        if self._should_flush():
+            self.flush()
+
+    def ingest_batch(self, raw_records: list[dict]) -> None:
+        """
+        Process multiple raw JSON records.
+        
+        Args:
+            raw_records: List of raw JSON records.
+        
+        USES:
+            - Topic 1 (normalization/): RecordNormalizer.normalize_batch()
+        """
+        # TOPIC 1: Normalize all records
+        normalized_batch = self._record_normalizer.normalize_batch(raw_records)
+        
+        # Add to buffer
+        self._buffer.extend(normalized_batch)
+        
+        # Check if we should flush
+        if self._should_flush():
+            self.flush()
+
+    def flush(self) -> dict:
+        """
+        Manually trigger the pipeline flush:
+        1. Analyze buffered records
+        2. Classify fields
+        3. Route to backends
+        4. Persist metadata
+        5. Clear buffer
+        
+        Returns:
+            Dictionary with flush results and statistics.
+        
+        USES:
+            - Topic 2 (analysis/): FieldAnalyzer.analyze_batch(), Classifier.classify_all()
+            - Topic 3 (storage/): RecordRouter.route_batch()
+            - Topic 4 (persistence/): MetadataStore.save_all()
+            - Topic 1 (normalization/): FieldNormalizer.get_mappings()
+        """
+        if not self._buffer:
+            return {
+                "status": "nothing_to_flush",
+                "buffer_size": 0,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        start_time = time.time()
+        buffer_size = len(self._buffer)
+        
+        try:
+            # TOPIC 2: Analyze the buffered records
+            self._field_analyzer.analyze_batch(self._buffer)
+            field_stats = self._field_analyzer.get_stats()
+            
+            # TOPIC 2: Classify fields based on analysis
+            total_records = self._field_analyzer.total_records
+            self._decisions = self._classifier.classify_all(
+                field_stats,
+                total_records
+            )
+            
+            # TOPIC 3: Route records to appropriate backends
+            route_result = self._record_router.route_batch(
+                self._buffer,
+                self._decisions,
+                table_name="records",
+                collection_name="records"
+            )
+            
+            # TOPIC 4: Persist metadata
+            self._total_records += buffer_size
+            self._metadata_store.save_all(
+                decisions=self._decisions,
+                stats=field_stats,
+                mappings=self._field_normalizer.get_mappings(),
+                total_records=self._total_records
+            )
+            
+            # Clear buffer and update timestamp
+            self._buffer.clear()
+            self._last_flush_time = time.time()
+            
+            elapsed = time.time() - start_time
+            
+            result = {
+                "status": "success",
+                "records_processed": buffer_size,
+                "total_records_lifetime": self._total_records,
+                "sql_inserts": route_result.sql_inserts,
+                "mongo_inserts": route_result.mongo_inserts,
+                "fields_classified": len(self._decisions),
+                "elapsed_seconds": round(elapsed, 3),
+                "timestamp": datetime.utcnow().isoformat(),
+                "errors": route_result.errors if route_result.errors else []
+            }
+            
+            print(f"✓ Flushed {buffer_size} records in {elapsed:.2f}s "
+                  f"(SQL: {route_result.sql_inserts}, Mongo: {route_result.mongo_inserts})")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"Flush failed: {str(e)}"
+            print(f"✗ {error_msg}")
+            return {
+                "status": "error",
+                "error": error_msg,
+                "records_in_buffer": buffer_size,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    def get_decisions(self) -> dict[str, PlacementDecision]:
+        """
+        Get current placement decisions for all fields.
+        
+        Returns:
+            Dictionary mapping field names to placement decisions.
+        """
+        return self._decisions.copy()
+
+    def get_field_stats(self) -> dict:
+        """
+        Get current field statistics from the analyzer.
+        
+        Returns:
+            Dictionary of field names to their statistics.
+        
+        USES:
+            - Topic 2 (analysis/): FieldAnalyzer.get_stats()
+        """
+        return self._field_analyzer.get_stats()
+
+    def get_status(self) -> dict:
+        """
+        Get current pipeline status.
+        
+        Returns:
+            Dictionary with pipeline state information.
+        """
+        return {
+            "buffer_size": len(self._buffer),
+            "buffer_capacity": self._buffer_size,
+            "total_records_processed": self._total_records,
+            "fields_discovered": len(self._field_analyzer.get_stats()),
+            "fields_classified": len(self._decisions),
+            "seconds_since_last_flush": round(time.time() - self._last_flush_time, 2),
+            "buffer_timeout": self._buffer_timeout,
+            "will_auto_flush": self._should_flush(),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def get_classification_summary(self) -> dict:
+        """
+        Get summary of field classifications by backend.
+        
+        Returns:
+            Dictionary with fields grouped by their backend assignment.
+        """
+        summary = {
+            "SQL": [],
+            "MONGODB": [],
+            "BOTH": []
+        }
+        
+        for field_name, decision in self._decisions.items():
+            backend_key = decision.backend.name
+            summary[backend_key].append({
+                "field": field_name,
+                "sql_type": decision.sql_type,
+                "nullable": decision.is_nullable,
+                "reason": decision.reason
+            })
+        
+        return {
+            "sql_fields": summary["SQL"],
+            "mongo_fields": summary["MONGODB"],
+            "both_fields": summary["BOTH"],
+            "counts": {
+                "sql": len(summary["SQL"]),
+                "mongo": len(summary["MONGODB"]),
+                "both": len(summary["BOTH"]),
+                "total": len(self._decisions)
+            }
+        }
+
+    def _should_flush(self) -> bool:
+        """
+        Check if buffer should be flushed based on size or time threshold.
+        
+        Returns:
+            True if flush should occur, False otherwise.
+        """
+        # Flush if buffer is full
+        if len(self._buffer) >= self._buffer_size:
+            return True
+        
+        # Flush if timeout exceeded and buffer is not empty
+        time_elapsed = time.time() - self._last_flush_time
+        if self._buffer and time_elapsed >= self._buffer_timeout:
+            return True
+        
+        return False
+
+    def _load_previous_state(self) -> None:
+        """
+        Load previous state from metadata store if it exists.
+        This allows the pipeline to resume after a restart.
+        
+        USES:
+            - Topic 4 (persistence/): MetadataStore.exists(), MetadataStore.load_all()
+            - Topic 2 (analysis/): FieldAnalyzer.stats
+            - Topic 1 (normalization/): FieldNormalizer.restore_mappings()
+        """
+        if not self._metadata_store.exists():
+            print("✓ No previous metadata found, starting fresh")
+            return
+        
+        try:
+            # Load all persisted metadata
+            decisions, stats, mappings, state = self._metadata_store.load_all()
+            
+            # Restore decisions
+            self._decisions = decisions
+            
+            # Restore field analyzer state
+            if stats:
+                for field_name, field_stats in stats.items():
+                    self._field_analyzer.stats[field_name] = field_stats
+            
+            # Restore total records count
+            if state and "total_records" in state:
+                self._total_records = state["total_records"]
+            
+            # Restore field normalizer mappings
+            if mappings:
+                self._field_normalizer.restore_mappings(mappings)
+            
+            print(f"✓ Restored state: {self._total_records} records processed, "
+                  f"{len(self._decisions)} decisions loaded")
+            
+        except Exception as e:
+            print(f"⚠ Warning: Could not load previous state: {e}")
+            print("✓ Starting with fresh state")
+
+    def close(self) -> None:
+        """
+        Close all connections and clean up resources.
+        
+        USES:
+            - Topic 3 (storage/): MySQLClient.close(), MongoClient.close()
+        """
+        try:
+            self._mysql_client.close()
+            self._mongo_client.close()
+            print("✓ Pipeline connections closed")
+        except Exception as e:
+            print(f"⚠ Warning during close: {e}")
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        # Flush any remaining records
+        if self._buffer:
+            self.flush()
+        
+        # Close connections
+        self.close()
+        
+        return False  # Don't suppress exceptions
