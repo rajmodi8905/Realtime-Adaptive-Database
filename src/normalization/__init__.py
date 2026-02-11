@@ -8,8 +8,14 @@
 #
 # Modules:
 # --------
-# - field_normalizer.py  → Normalize field names (camelCase → snake_case, etc.)
+# - field_normalizer.py  → Placeholder (field name normalization not required)
 # - type_detector.py     → Detect true types of values (IP vs float, UUID, etc.)
-# - record_normalizer.py → Normalize a full record (orchestrates the above two)
+# - record_normalizer.py → Normalize a full record with aggressive type coercion
 #
 # ==============================================
+
+from .type_detector import TypeDetector
+from .record_normalizer import RecordNormalizer
+from .field_normalizer import FieldNormalizer
+
+__all__ = ["TypeDetector", "RecordNormalizer", "FieldNormalizer"]
