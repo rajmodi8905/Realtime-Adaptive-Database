@@ -56,23 +56,23 @@
 #   - errors: list[str]
 #
 # ==============================================
+from dataclasses import dataclass, field
+from typing import Any
 
-from dataclasses import dataclass
-
+from analysis.decision import Backend, PlacementDecision
 @dataclass
 class RouteResult:
-    def __init__(self, records_processed=0, sql_inserts=0, mongo_inserts=0, errors=None):
-        self.records_processed = records_processed
-        self.sql_inserts = sql_inserts
-        self.mongo_inserts = mongo_inserts
-        self.errors = errors if errors is not None else []
+    records_processed: int = 0
+    sql_inserts: int = 0
+    mongo_inserts: int = 0
+    errors: list[str] = field(default_factory=list)
 
 class RecordRouter:
     def __init__(self, mysql_client, mongo_client):
         self.mysql_client = mysql_client
         self.mongo_client = mongo_client
 
-    def route_batch(self, records, decisions, table_name="records", collection_name="records") -> RouteResult:
+    def route_batch(self, records: list[dict], decisions : dict[str, PlacementDecision], table_name="records", collection_name="records") -> RouteResult:
         # For each record:
         #   1. Split into sql_part and mongo_part using decisions
         #   2. Batch insert sql_parts into MySQL
@@ -94,19 +94,21 @@ class RecordRouter:
         # Insert batches
         if sql_batch:
             try:
+                self.mysql_client.ensure_table(table_name, decisions)
                 inserted_sql = self.mysql_client.insert_batch(table_name, sql_batch)
                 result.sql_inserts += inserted_sql
             except Exception as e:
                 result.errors.append(f"Error inserting SQL batch: {str(e)}")
         if mongo_batch:
             try:
+                self.mongo_client.ensure_indexes(collection_name)
                 inserted_mongo = self.mongo_client.insert_batch(collection_name, mongo_batch)
                 result.mongo_inserts += inserted_mongo
             except Exception as e:
                 result.errors.append(f"Error inserting MongoDB batch: {str(e)}")
         return result
 
-    def _split_record(self, record, decisions) -> tuple:
+    def _split_record(self, record: dict, decisions: dict[str, PlacementDecision]) -> tuple[dict, dict]:
         # Split one record into (sql_dict, mongo_dict).
         # Rules:
         #   - Backend.SQL    → goes to sql_dict only
@@ -120,11 +122,11 @@ class RecordRouter:
             if decision is None:
                 # Unknown field, default to MongoDB
                 mongo_dict[field] = value
-            elif decision == "SQL":
+            elif decision.backend == Backend.SQL:
                 sql_dict[field] = value
-            elif decision == "MONGODB":
+            elif decision.backend == Backend.MONGODB:
                 mongo_dict[field] = value
-            elif decision == "BOTH":
+            elif decision.backend == Backend.BOTH:
                 sql_dict[field] = value
                 mongo_dict[field] = value
             else:

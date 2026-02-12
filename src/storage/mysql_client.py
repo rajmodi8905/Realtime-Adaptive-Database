@@ -93,17 +93,6 @@ class MySQLClient:
         # Create table if it doesn't exist, or ALTER TABLE to add new columns
         if self.connection is not None:
             cursor = self.connection.cursor(dictionary=False)
-            # Always include linking fields
-            required_fields = {
-                "username": "VARCHAR(255)",
-                "sys_ingested_at": "DATETIME",
-                "t_stamp": "DATETIME"
-            }
-            # Add fields from decisions that are SQL-bound
-            for field, decision in decisions.items():
-                if decision.backend in (Backend.SQL, Backend.BOTH):
-                    sql_type = decision.sql_type or "VARCHAR(255)"
-                    required_fields[field] = sql_type
             # Check if table exists
             cursor.execute(
                 "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
@@ -115,8 +104,18 @@ class MySQLClient:
                 raise RuntimeError("COUNT query returned no rows")
             if cf[0] == 0:
                 # Table doesn't exist, create it
-                columns_def = ", ".join(f"{name} {dtype}" for name, dtype in required_fields.items())
-                create_query = f"CREATE TABLE {table_name} (id INT AUTO_INCREMENT PRIMARY KEY, {columns_def})"
+                columns_def: str = ""
+                for field, decision in decisions.items():
+                    if decision.backend in (Backend.SQL, Backend.BOTH):
+                        is_nullable = "NULL" if decision.is_nullable else "NOT NULL"
+                        dtype = decision.sql_type or "VARCHAR(255)"
+                        is_unique = "UNIQUE" if decision.is_unique else ""
+                        is_primary_key = "PRIMARY KEY" if decision.is_primary_key else ""
+                        # Store required fields and types for table creation
+                        columns_def = f"{columns_def}{field} {dtype} {is_nullable} {is_unique} {is_primary_key}, "
+                columns_def = columns_def.rstrip(", ")
+                create_query = f"CREATE TABLE {table_name}({columns_def})"
+                print(create_query) # DEBUG: print the create query
                 cursor.execute(create_query)
             else:
                 # Table exists, check for missing columns and ALTER TABLE to add them
@@ -127,9 +126,12 @@ class MySQLClient:
                 )
                 rows = cast(list[Tuple[Any, ...]], cursor.fetchall())
                 existing_columns = set(row[0] for row in rows)
-                for field, dtype in required_fields.items():
-                    if field not in existing_columns:
-                        alter_query = f"ALTER TABLE {table_name} ADD COLUMN {field} {dtype}"
+                for field, decision in decisions.items():
+                    if decision.backend in (Backend.SQL, Backend.BOTH) and field not in existing_columns:
+                        is_nullable = "NULL" if decision.is_nullable else "NOT NULL"
+                        dtype = decision.sql_type or "VARCHAR(255)"
+                        is_unique = "UNIQUE" if decision.is_unique else ""
+                        alter_query = f"ALTER TABLE {table_name} ADD COLUMN {field} {dtype} {is_nullable} {is_unique}"
                         cursor.execute(alter_query)
             self.connection.commit()
             cursor.close()
@@ -139,13 +141,15 @@ class MySQLClient:
         if self.connection is not None and records:
             cursor = self.connection.cursor()
             # Get columns from first record (assuming all have same keys)
-            columns = records[0].keys()
-            placeholders = ", ".join(["%s"] * len(columns))
-            column_names = ", ".join(columns)
-            query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
-            values = [tuple(record[col] for col in columns) for record in records]
-            cursor.executemany(query, values)
-            self.connection.commit()
+            for record in records:
+                columns = record.keys()
+                placeholders = ", ".join(['%s'] * len(columns))
+                column_names = ", ".join(columns)
+                query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
+                # values = [tuple(record[col] for col in columns) for record in records]
+                values = record.values()
+                cursor.execute(query, tuple(values))
+                self.connection.commit()
             inserted_count = cursor.rowcount
             cursor.close()
             return inserted_count

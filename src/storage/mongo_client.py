@@ -52,6 +52,7 @@
 
 import pymongo
 from pymongo import MongoClient as PyMongoClient
+import pymongo.errors
 from pymongo.errors import ConnectionFailure, OperationFailure
 
 class MongoClient:
@@ -90,17 +91,44 @@ class MongoClient:
             self.client = None
 
     def ensure_indexes(self, collection_name):
-        # Create indexes on:
-        #   - username (for cross-DB joins)
-        #   - sys_ingested_at (for cross-DB joins and ordering)
-        #   - Compound index on (username, sys_ingested_at)
+        # Create unique indexes and enforce NOT NULL via schema validator
         if not self.client:
             raise Exception("Not connected to MongoDB.")
-        collection = self.client[self.database][collection_name]
-        collection.create_index("username")
-        collection.create_index("sys_ingested_at")
-        collection.create_index([("username", pymongo.ASCENDING), ("sys_ingested_at", pymongo.ASCENDING)])
-        print(f"Indexes ensured on collection '{collection_name}'.")
+        
+        db = self.client[self.database]
+        collection = db[collection_name]
+        
+        # Create unique indexes for each field individually
+        collection.create_index("username", unique=True)
+        collection.create_index("sys_ingested_at", unique=True)
+        
+        # Enforce NOT NULL using schema validator
+        validator = {
+            "$jsonSchema": {
+                "bsonType": "object",
+                "required": ["username", "sys_ingested_at"],
+                "properties": {
+                    "username": {
+                        "bsonType": "string",
+                        "description": "username is required and cannot be null"
+                    },
+                    "sys_ingested_at": {
+                        "bsonType": "string",
+                        "description": "sys_ingested_at is required and cannot be null"
+                    }
+                }
+            }
+        }
+        
+        # Apply validator to existing collection
+        try:
+            db.command("collMod", collection_name, validator=validator)
+            print(f"Schema validator applied to collection '{collection_name}'.")
+        except pymongo.errors.OperationFailure:
+            # Collection might not exist yet, will be validated on insert
+            pass
+        
+        print(f"Unique indexes ensured on collection '{collection_name}'.")
 
     def insert_batch(self, collection_name, documents):
         # Insert multiple documents. Return count inserted.
