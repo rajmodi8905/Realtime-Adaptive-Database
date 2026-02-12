@@ -65,4 +65,267 @@
 #
 # ==============================================
 
-pass
+from typing import Dict
+from .field_stats import FieldStats
+from .decision import PlacementDecision, ClassificationThresholds, Backend
+
+
+class Classifier:
+    """
+    Applies heuristic rules to FieldStats to produce PlacementDecisions.
+    
+    This is where the autonomous decision-making happens. Based on observed
+    field characteristics (type stability, presence frequency, nesting),
+    the Classifier decides whether each field should go to SQL, MongoDB,
+    or both (for critical linking fields).
+    """
+
+    # Special fields that MUST be in both backends for cross-record linking
+    LINKING_FIELDS = {"username", "sys_ingested_at", "t_stamp"}
+
+    def __init__(
+        self,
+        thresholds: ClassificationThresholds = None
+    ):
+        """
+        Initialize the Classifier with configurable thresholds.
+        
+        Args:
+            thresholds: Optional ClassificationThresholds. If not provided,
+                       defaults will be used (70% presence, 90% type stability, etc.)
+        """
+        self.thresholds = thresholds or ClassificationThresholds()
+
+    def classify_all(
+        self,
+        stats: Dict[str, FieldStats],
+        total_records: int
+    ) -> Dict[str, PlacementDecision]:
+        """
+        Classify all observed fields.
+        
+        Args:
+            stats: Dictionary of field_name → FieldStats from the analyzer
+            total_records: Total number of records analyzed
+            
+        Returns:
+            Dictionary of field_name → PlacementDecision
+        """
+        decisions = {}
+        for field_name, field_stats in stats.items():
+            decision = self.classify_field(
+                field_name,
+                field_stats,
+                total_records
+            )
+            decisions[field_name] = decision
+        return decisions
+
+    def classify_field(
+        self,
+        field_name: str,
+        stats: FieldStats,
+        total_records: int
+    ) -> PlacementDecision:
+        """
+        Classify a single field using type-based heuristic rules.
+        
+        Rules are applied in order (short-circuit evaluation):
+        1. LINKING FIELDS → BOTH
+        2. ARRAY FIELDS → MONGODB (arrays always stay nested)
+        3. OBJECT FIELDS → MONGODB (objects stay nested unless shallow & stable)
+        4. SCALAR FIELDS → SQL (if stable & present)
+        5. SPARSE/UNSTABLE → MONGODB
+        
+        Key insight: Type determines routing more than nesting depth.
+        - metadata.sensor_data.version (scalar at depth 2) → SQL ✅
+        - metadata.tags (array at depth 1) → MongoDB ✅
+        
+        Args:
+            field_name: The field to classify (using dot notation)
+            stats: The accumulated statistics for this field
+            total_records: Total records analyzed (for ratio calculation)
+            
+        Returns:
+            A PlacementDecision with backend choice and routing info
+        """
+
+        # RULE 1: LINKING FIELDS must go to both backends
+        if field_name in self.LINKING_FIELDS:
+            reason = (
+                f"Critical linking field '{field_name}' required in both backends "
+                f"for cross-database joins and record traceability."
+            )
+            sql_column = field_name  # Use as-is for top-level fields
+            return PlacementDecision(
+                field_name=field_name,
+                backend=Backend.BOTH,
+                sql_column_name=sql_column,
+                sql_type="VARCHAR(255)",
+                mongo_path=field_name,
+                is_nullable=False,
+                is_unique=(field_name == "username"),
+                reason=reason,
+            )
+
+        # Calculate metrics
+        presence_ratio = stats.presence_count / total_records if total_records > 0 else 0.0
+        type_stability = stats.type_stability
+        unique_ratio = stats.unique_ratio
+        dominant_type = stats.dominant_type
+
+        # Helper to get SQL column name from field name (flatten dots to underscores)
+        sql_column_name = field_name.replace(".", "_")
+
+        # RULE 2: ARRAY FIELDS → MONGODB
+        # Arrays must stay in MongoDB because SQL doesn't handle arrays natively
+        if dominant_type == "array":
+            reason = (
+                f"Field '{field_name}' is an array type. "
+                f"MongoDB's native array support is required; SQL would need junction tables."
+            )
+            return PlacementDecision(
+                field_name=field_name,
+                backend=Backend.MONGODB,
+                mongo_path=field_name,
+                is_nullable=stats.null_count > 0,
+                reason=reason,
+            )
+
+        # RULE 3: OBJECT FIELDS → MONGODB
+        # Objects (dicts) stay in MongoDB unless very shallow and stable
+        if dominant_type == "object":
+            # Deep objects always go to MongoDB
+            if stats.nesting_depth > 1:
+                reason = (
+                    f"Field '{field_name}' is a nested object (depth={stats.nesting_depth}). "
+                    f"MongoDB's schema flexibility is better suited for complex structures."
+                )
+            else:
+                reason = (
+                    f"Field '{field_name}' is an object type. "
+                    f"MongoDB is schema-flexible for structural variation."
+                )
+            
+            return PlacementDecision(
+                field_name=field_name,
+                backend=Backend.MONGODB,
+                mongo_path=field_name,
+                is_nullable=stats.null_count > 0,
+                reason=reason,
+            )
+
+        # RULE 4: SCALAR FIELDS - Check stability and presence
+        # Scalars can go to SQL if they're stable and present enough
+        if dominant_type in ("int", "float", "bool", "str", "datetime", "ip", "uuid"):
+            
+            if (
+                presence_ratio >= self.thresholds.min_presence_ratio
+                and type_stability >= self.thresholds.min_type_stability
+            ):
+                # STABLE SCALAR → SQL
+                sql_type = self._determine_sql_type(stats)
+                is_unique = unique_ratio > self.thresholds.max_unique_ratio
+                is_nullable = stats.null_count > 0
+
+                reason = (
+                    f"Scalar field '{field_name}' is structured: "
+                    f"present in {presence_ratio*100:.1f}% of records, "
+                    f"type-stable at {type_stability*100:.1f}%. "
+                    f"Type={dominant_type}, Unique={is_unique}"
+                )
+
+                return PlacementDecision(
+                    field_name=field_name,
+                    backend=Backend.SQL,
+                    sql_column_name=sql_column_name,
+                    sql_type=sql_type,
+                    mongo_path=field_name,  # Also tracked for reference
+                    is_nullable=is_nullable,
+                    is_unique=is_unique,
+                    reason=reason,
+                )
+
+        # RULE 5: SPARSE OR UNSTABLE → MONGODB
+        # Fall back to MongoDB for anything not matching above rules
+        reason = (
+            f"Field '{field_name}' is sparse or unstable: "
+            f"present in {presence_ratio*100:.1f}% of records, "
+            f"type-stable at {type_stability*100:.1f}%. "
+            f"MongoDB's schema-flexibility accommodates variability."
+        )
+
+        return PlacementDecision(
+            field_name=field_name,
+            backend=Backend.MONGODB,
+            mongo_path=field_name,
+            is_nullable=stats.null_count > 0,
+            reason=reason,
+        )
+
+    def _determine_sql_type(self, stats: FieldStats) -> str:
+        """
+        Map the field's detected type to a MySQL column type.
+        
+        Uses the dominant (most frequently observed) type to decide
+        the SQL column type.
+        
+        Args:
+            stats: The field statistics
+            
+        Returns:
+            A MySQL column type string (e.g., "BIGINT", "VARCHAR(255)")
+        """
+        dominant_type = stats.dominant_type
+
+        if dominant_type == "int":
+            return "BIGINT"
+        elif dominant_type == "float":
+            return "DOUBLE"
+        elif dominant_type == "bool":
+            return "BOOLEAN"
+        elif dominant_type == "ip":
+            # IPv6 can be up to 45 chars
+            return "VARCHAR(45)"
+        elif dominant_type == "uuid":
+            # UUID format: 36 chars (8-4-4-4-12 with dashes)
+            return "CHAR(36)"
+        elif dominant_type == "datetime":
+            return "DATETIME"
+        elif dominant_type == "str":
+            # Default string type with reasonable size
+            return "VARCHAR(255)"
+        else:
+            # Unknown type, use TEXT as safest option
+            return "TEXT"
+
+    def get_backend_distribution(
+        self,
+        decisions: Dict[str, PlacementDecision]
+    ) -> dict:
+        """
+        Analyze distribution of decisions across backends.
+        
+        Useful for understanding the overall data placement strategy.
+        
+        Args:
+            decisions: Dictionary of field_name → PlacementDecision
+            
+        Returns:
+            Dict with counts of SQL, MONGODB, BOTH field placements
+        """
+        distribution = {
+            "sql": 0,
+            "mongodb": 0,
+            "both": 0,
+        }
+
+        for decision in decisions.values():
+            if decision.backend == Backend.SQL:
+                distribution["sql"] += 1
+            elif decision.backend == Backend.MONGODB:
+                distribution["mongodb"] += 1
+            elif decision.backend == Backend.BOTH:
+                distribution["both"] += 1
+
+        return distribution

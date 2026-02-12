@@ -17,3 +17,17 @@
 # - decision.py         → Data classes for PlacementDecision and thresholds
 #
 # ==============================================
+
+from .field_stats import FieldStats
+from .field_analyzer import FieldAnalyzer
+from .classifier import Classifier
+from .decision import Backend, PlacementDecision, ClassificationThresholds
+
+__all__ = [
+    "FieldStats",
+    "FieldAnalyzer",
+    "Classifier",
+    "Backend",
+    "PlacementDecision",
+    "ClassificationThresholds",
+]
