@@ -6,8 +6,8 @@ from typing import Any, Optional, Union
 
 class TypeDetector:
     NULL_VARIANTS = {"null", "none", "nil", ""}
-    BOOL_TRUE_VARIANTS = {"true", "yes", "1", "t", "y"}
-    BOOL_FALSE_VARIANTS = {"false", "no", "0", "f", "n"}
+    BOOL_TRUE_VARIANTS = {"true", "yes"} #{"1", "t", "y"}
+    BOOL_FALSE_VARIANTS = {"false", "no"} #{"0", "f", "n"}
     
     UUID_PATTERN = re.compile(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
