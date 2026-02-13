@@ -48,4 +48,51 @@
 #
 # ==============================================
 
-pass
+from enum import Enum
+
+class Backend(Enum):
+    SQL = "SQL"
+    MONGODB = "MONGODB"
+    BOTH = "BOTH"
+
+class PlacementDecision:
+    def __init__(
+        self,
+        field_name: str,
+        backend: Backend,
+        sql_type: str | None = None,
+        is_nullable: bool = True,
+        is_unique: bool = False,
+        is_primary_key: bool = False,
+        reason: str = ""
+    ):
+        self.field_name = field_name
+        self.backend = backend
+        self.sql_type = sql_type
+        self.is_nullable = is_nullable
+        self.is_unique = is_unique
+        self.is_primary_key = is_primary_key
+        self.reason = reason
+
+    def to_dict(self) -> dict:
+        return {
+            "field_name": self.field_name,
+            "backend": self.backend.value,
+            "sql_type": self.sql_type,
+            "is_nullable": self.is_nullable,
+            "is_unique": self.is_unique,
+            "is_primary_key": self.is_primary_key,
+            "reason": self.reason
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'PlacementDecision':
+        return cls(
+            field_name=data["field_name"],
+            backend=Backend(data["backend"]),
+            sql_type=data.get("sql_type"),
+            is_nullable=data.get("is_nullable", True),
+            is_unique=data.get("is_unique", False),
+            is_primary_key=data.get("is_primary_key", False),
+            reason=data.get("reason", "")
+        )
