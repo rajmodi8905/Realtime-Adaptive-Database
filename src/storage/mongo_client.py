@@ -148,6 +148,7 @@ class MongoClient:
         result = collection.insert_one(document)
         print(f"Inserted document with id {result.inserted_id} into '{collection_name}'.")
         return result.inserted_id
+
     def find(self, collection_name, query):
         # Query documents matching filter.
         if not self.client:

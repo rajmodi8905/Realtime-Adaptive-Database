@@ -91,6 +91,7 @@ class RecordRouter:
                 result.records_processed += 1
             except Exception as e:
                 result.errors.append(f"Error processing record {record}: {str(e)}")
+
         # Insert batches
         if sql_batch:
             try:
@@ -109,14 +110,16 @@ class RecordRouter:
         return result
 
     def _split_record(self, record: dict, decisions: dict[str, PlacementDecision]) -> tuple[dict, dict]:
-        # Split one record into (sql_dict, mongo_dict).
+        # Split one record into (sql_dict, mongo_dict, buffer_dict).
         # Rules:
         #   - Backend.SQL    → goes to sql_dict only
         #   - Backend.MONGODB → goes to mongo_dict only
         #   - Backend.BOTH   → goes to BOTH dicts
+        #   - Backend.BUFFER → goes to buffer_dict only
         #   - Unknown field  → goes to mongo_dict (safe default)
         sql_dict = {}
         mongo_dict = {}
+        buffer_dict = {}
         for field, value in record.items():
             decision = decisions.get(field)
             if decision is None:
@@ -129,8 +132,12 @@ class RecordRouter:
             elif decision.backend == Backend.BOTH:
                 sql_dict[field] = value
                 mongo_dict[field] = value
+            elif decision.backend == Backend.BUFFER:
+                buffer_dict[field] = value
             else:
                 raise ValueError(f"Invalid placement decision for field '{field}': {decision}")
+            if (buffer_dict !=  {}):
+                mongo_dict["__buffer__"] = buffer_dict
         return sql_dict, mongo_dict
 
     
