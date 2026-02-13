@@ -1,53 +1,155 @@
-# ==============================================
-# TypeDetector
-# ==============================================
-#
-# PURPOSE:
-#   Detect the TRUE semantic type of a value, not just the Python type.
-#   This is critical because JSON only has string, number, bool, null,
-#   array, object — but we need to distinguish between:
-#     - "192.168.1.1" (IP address) vs "hello" (plain string)
-#     - "473af720-92e2-..." (UUID) vs "some-random-text" (string)
-#     - "2024-01-15T10:30:00Z" (datetime) vs "Jan 15" (string)
-#     - 1.234 (float) vs True (bool, which is a subclass of int in Python!)
-#
-# WHY THIS CLASS EXISTS:
-#   The assignment specifically asks:
-#     "How did your system differentiate between a string representing
-#      an IP ('1.2.3.4') and a float (1.2)?"
-#   This class is the answer.
-#
-# CLASS: TypeDetector
-# -------------------
-#   Stateless utility class. Takes a value, returns its detected type as a string.
-#
-#   Methods:
-#   --------
-#   - detect(value: Any) -> str
-#       Returns one of:
-#       "null", "bool", "int", "float", "str", "ip", "uuid",
-#       "datetime", "array", "object"
-#
-#   Internal helpers:
-#   -----------------
-#   - _is_ip_address(value: str) -> bool
-#   - _is_uuid(value: str) -> bool
-#   - _is_datetime(value: str) -> bool
-#
-# DETECTION PRIORITY (order matters!):
-# ------------------------------------
-#   1. None          → "null"
-#   2. bool          → "bool"     (MUST check before int — bool is subclass of int)
-#   3. int           → "int"
-#   4. float         → "float"
-#   5. list          → "array"
-#   6. dict          → "object"
-#   7. str:
-#      a. IP pattern   → "ip"
-#      b. UUID pattern → "uuid"
-#      c. Datetime     → "datetime"
-#      d. Otherwise    → "str"
-#
-# ==============================================
+import re
+import ipaddress
+from datetime import datetime
+from typing import Any, Optional, Union
 
-pass
+
+class TypeDetector:
+    NULL_VARIANTS = {"null", "none", "nil", ""}
+    BOOL_TRUE_VARIANTS = {"true", "yes"} #{"1", "t", "y"}
+    BOOL_FALSE_VARIANTS = {"false", "no"} #{"0", "f", "n"}
+    
+    UUID_PATTERN = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        re.IGNORECASE
+    )
+    
+    DATETIME_FORMATS = [
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+        "%Y/%m/%d",
+        "%d-%m-%Y",
+        "%m-%d-%Y",
+    ]
+
+    @classmethod
+    def detect(cls, value: Any) -> str:
+        if value is None:
+            return "null"
+        
+        if isinstance(value, bool):
+            return "bool"
+        
+        if isinstance(value, int):
+            return "int"
+        
+        if isinstance(value, float):
+            return "float"
+        
+        if isinstance(value, list):
+            return "array"
+        
+        if isinstance(value, dict):
+            return "object"
+        
+        if isinstance(value, str):
+            value_stripped = value.strip()
+            
+            if cls._is_ip_address(value_stripped):
+                return "ip"
+            
+            if cls._is_uuid(value_stripped):
+                return "uuid"
+            
+            if cls._is_datetime(value_stripped):
+                return "datetime"
+            
+            return "str"
+        
+        return "str"
+
+    @classmethod
+    def coerce(cls, value: Any, target_type: Optional[str] = None) -> tuple[Any, bool, str]:
+        if value is None:
+            return None, True, "null"
+        
+        if isinstance(value, str):
+            value = value.strip()
+            
+            if value.lower() in cls.NULL_VARIANTS:
+                return None, True, "null"
+            
+            if not target_type:
+                target_type = cls.detect(value)
+            
+            if target_type == "bool":
+                if value.lower() in cls.BOOL_TRUE_VARIANTS:
+                    return True, True, "bool"
+                if value.lower() in cls.BOOL_FALSE_VARIANTS:
+                    return False, True, "bool"
+                return value, False, "str"
+            
+            if target_type == "int":
+                try:
+                    return int(value), True, "int"
+                except (ValueError, TypeError):
+                    try:
+                        return int(float(value)), True, "int"
+                    except (ValueError, TypeError):
+                        return value, False, "str"
+            
+            if target_type == "float":
+                try:
+                    return float(value), True, "float"
+                except (ValueError, TypeError):
+                    return value, False, "str"
+            
+            if target_type == "datetime":
+                dt = cls._parse_datetime(value)
+                if dt:
+                    return dt, True, "datetime"
+                return value, False, "str"
+            
+            if target_type in ("ip", "uuid"):
+                return value, True, target_type
+            
+            if value.lower() in cls.BOOL_TRUE_VARIANTS:
+                return True, True, "bool"
+            if value.lower() in cls.BOOL_FALSE_VARIANTS:
+                return False, True, "bool"
+            
+            try:
+                int_val = int(value)
+                return int_val, True, "int"
+            except (ValueError, TypeError):
+                pass
+            
+            try:
+                float_val = float(value)
+                return float_val, True, "float"
+            except (ValueError, TypeError):
+                pass
+            
+            return value, True, "str"
+        
+        detected_type = cls.detect(value)
+        return value, True, detected_type
+
+    @classmethod
+    def _is_ip_address(cls, value: str) -> bool:
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def _is_uuid(cls, value: str) -> bool:
+        return bool(cls.UUID_PATTERN.match(value))
+
+    @classmethod
+    def _is_datetime(cls, value: str) -> bool:
+        return cls._parse_datetime(value) is not None
+
+    @classmethod
+    def _parse_datetime(cls, value: str) -> Optional[datetime]:
+        for fmt in cls.DATETIME_FORMATS:
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        return None
