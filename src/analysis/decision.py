@@ -14,7 +14,7 @@
 #
 # ENUMS:
 # ------
-# - Backend(Enum): SQL, MONGODB, BOTH
+# - Backend(Enum): SQL, MONGODB, BOTH, BUFFER
 #     Which backend a field is assigned to.
 #
 # CLASSES:
@@ -54,6 +54,7 @@ class Backend(Enum):
     SQL = "SQL"
     MONGODB = "MONGODB"
     BOTH = "BOTH"
+    BUFFER = "BUFFER"  # For fields we want to hold in memory until we have enough info to decide
 
 class PlacementDecision:
     def __init__(
