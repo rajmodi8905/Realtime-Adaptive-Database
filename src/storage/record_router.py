@@ -100,12 +100,10 @@ class RecordRouter:
                 result.sql_inserts += inserted_sql
             except Exception as e:
                 result.errors.append(f"Error inserting SQL batch: {str(e)}")
-                print(mongo_batch)
         if mongo_batch:
             try:
                 self.mongo_client.ensure_indexes(collection_name)
                 inserted_mongo = self.mongo_client.insert_batch(collection_name, mongo_batch)
-                print(mongo_batch)
                 result.mongo_inserts += inserted_mongo
             except Exception as e:
                 result.errors.append(f"Error inserting MongoDB batch: {str(e)}")
