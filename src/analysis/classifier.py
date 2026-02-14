@@ -119,7 +119,102 @@ class Classifier:
                 total_records
             )
             decisions[field_name] = decision
+        
+        # POST-PROCESSING: Dynamically determine primary key from observed data
+        # Find the best candidate for primary key among SQL-bound fields
+        self._assign_primary_key(decisions, stats, total_records)
+        
         return decisions
+    
+    def _assign_primary_key(
+        self,
+        decisions: Dict[str, PlacementDecision],
+        stats: Dict[str, FieldStats],
+        total_records: int
+    ) -> None:
+        """
+        Dynamically assign primary key to the best candidate field based on observed data.
+        
+        Criteria for primary key (in priority order):
+        1. Must be going to SQL (Backend.SQL or Backend.BOTH)
+        2. Highest unique_ratio (ideally 1.0 = all unique values)
+        3. Highest presence_ratio (ideally 1.0 = present in all records)
+        4. Non-nullable
+        5. Scalar type (not array/object)
+        
+        Args:
+            decisions: Dictionary of field decisions (modified in place)
+            stats: Dictionary of field statistics
+            total_records: Total records analyzed
+        """
+        # Find all SQL-bound fields that could be primary keys
+        candidates = []
+        
+        for field_name, decision in decisions.items():
+            # Only consider fields going to SQL
+            if decision.backend not in (Backend.SQL, Backend.BOTH):
+                continue
+            
+            # Skip array/object types
+            if decision.canonical_type in ("array", "object"):
+                continue
+            
+            # EXCLUDE timestamp/datetime fields - they shouldn't be primary keys
+            # These are auto-generated and not meaningful for logical identity
+            field_lower = field_name.lower()
+            is_timestamp = any(x in field_lower for x in 
+                             ['timestamp', '_at', 'created', 'updated', 'ingested', 'time', 'date'])
+            if is_timestamp or decision.canonical_type == "datetime":
+                continue
+            
+            field_stat = stats.get(field_name)
+            if not field_stat:
+                continue
+            
+            # Calculate metrics for primary key suitability
+            presence_ratio = field_stat.presence_count / total_records if total_records > 0 else 0.0
+            unique_ratio = field_stat.unique_ratio
+            
+            # Primary key must be present in most records and highly unique
+            if presence_ratio >= 0.9 and unique_ratio >= 0.9:
+                # Prefer fields that look like identifiers
+                is_identifier = any(x in field_lower for x in 
+                                  ['username', 'user_id', 'userid', 'id', 'uuid', 'key'])
+                
+                # Score = weighted combination
+                # identifier bonus (0.1), uniqueness (0.6), presence (0.3)
+                id_bonus = 0.1 if is_identifier else 0.0
+                score = id_bonus + (unique_ratio * 0.6) + (presence_ratio * 0.3)
+                
+                candidates.append({
+                    'field_name': field_name,
+                    'decision': decision,
+                    'unique_ratio': unique_ratio,
+                    'presence_ratio': presence_ratio,
+                    'is_identifier': is_identifier,
+                    'score': score
+                })
+        
+        # If we found candidates, pick the best one
+        if candidates:
+            # Sort by score (descending) then by unique_ratio (descending)
+            candidates.sort(key=lambda x: (x['score'], x['unique_ratio']), reverse=True)
+            best_candidate = candidates[0]
+            
+            # Mark as primary key and ensure it's unique and not nullable
+            best_decision = best_candidate['decision']
+            best_decision.is_primary_key = True
+            best_decision.is_unique = True
+            best_decision.is_nullable = False
+            
+            print(f"🔑 Primary key determined: '{best_candidate['field_name']}' "
+                  f"(uniqueness: {best_candidate['unique_ratio']:.2%}, "
+                  f"presence: {best_candidate['presence_ratio']:.2%})")
+        else:
+            # No good candidate found - this is unusual but possible
+            # In this case, MySQL will need an auto-increment id
+            print("⚠ No suitable primary key field found in data. "
+                  "Consider adding an auto-increment ID column.")
 
     def classify_field(
         self,
@@ -152,6 +247,18 @@ class Classifier:
 
         # RULE 1: LINKING FIELDS must go to both backends
         if field_name in self.LINKING_FIELDS:
+            # Check if this field has high uniqueness from observed data
+            unique_ratio = stats.unique_ratio
+            
+            # Timestamp fields should NOT be marked as unique even if they have high uniqueness
+            # They're not suitable for primary keys or duplicate detection
+            field_lower = field_name.lower()
+            is_timestamp = any(x in field_lower for x in 
+                             ['timestamp', '_at', 'created', 'updated', 'ingested', 'time', 'date'])
+            
+            # Only mark as unique if NOT a timestamp and has high uniqueness
+            is_unique_by_data = (not is_timestamp) and (unique_ratio > self.thresholds.max_unique_ratio)
+            
             reason = (
                 f"Critical linking field '{field_name}' required in both backends "
                 f"for cross-database joins and record traceability."
@@ -165,7 +272,7 @@ class Classifier:
                 mongo_path=field_name,
                 canonical_type="str",
                 is_nullable=False,
-                is_unique=(field_name == "username"),
+                is_unique=is_unique_by_data,  # Dynamically determined, excluding timestamps
                 reason=reason,
             )
 

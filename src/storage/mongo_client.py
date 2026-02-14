@@ -90,28 +90,37 @@ class MongoClient:
             print("Disconnected from MongoDB.")
             self.client = None
 
-    def ensure_indexes(self, collection_name):
-        # Create unique indexes and enforce NOT NULL via schema validator
+    def ensure_indexes(self, collection_name, key_field: str = None):
+        # Create indexes dynamically based on discovered key field
         if not self.client:
             raise Exception("Not connected to MongoDB.")
         
         db = self.client[self.database]
         collection = db[collection_name]
         
-        # Create unique index on username only (sys_ingested_at is not unique)
-        collection.create_index("username", unique=True)
+        # Drop existing indexes first (except _id) to avoid conflicts
+        try:
+            existing_indexes = collection.list_indexes()
+            for idx in existing_indexes:
+                if idx['name'] != '_id_':  # Never drop the _id index
+                    collection.drop_index(idx['name'])
+        except Exception as e:
+            pass  # Collection might not exist yet
+        
+        # Create unique index on the key field if specified
+        if key_field:
+            collection.create_index(key_field, unique=True)
+            print(f"Created unique index on '{key_field}' in '{collection_name}'.")
+        
+        # Create non-unique index on sys_ingested_at for time-based queries
         collection.create_index("sys_ingested_at", unique=False)
         
-        # Enforce NOT NULL using schema validator
+        # Enforce NOT NULL using schema validator only for required fields
         validator = {
             "$jsonSchema": {
                 "bsonType": "object",
-                "required": ["username", "sys_ingested_at"],
+                "required": ["sys_ingested_at"],  # Only sys_ingested_at is always required
                 "properties": {
-                    "username": {
-                        "bsonType": "string",
-                        "description": "username is required and cannot be null"
-                    },
                     "sys_ingested_at": {
                         "bsonType": "string",
                         "description": "sys_ingested_at is required and cannot be null"
@@ -120,6 +129,14 @@ class MongoClient:
             }
         }
         
+        # Add key field to required if specified
+        if key_field:
+            validator["$jsonSchema"]["required"].append(key_field)
+            validator["$jsonSchema"]["properties"][key_field] = {
+                "bsonType": "string",
+                "description": f"{key_field} is required and cannot be null"
+            }
+        
         # Apply validator to existing collection
         try:
             db.command("collMod", collection_name, validator=validator)
@@ -127,27 +144,43 @@ class MongoClient:
         except pymongo.errors.OperationFailure:
             # Collection might not exist yet, will be validated on insert
             pass
-        
-        print(f"Unique indexes ensured on collection '{collection_name}'.")
 
-    def insert_batch(self, collection_name, documents):
-        # Insert multiple documents. Return count inserted.
+    def insert_batch(self, collection_name, documents, key_field: str = None):
+        # Insert or update multiple documents (upsert). Return count processed.
         # Preserves nested structure as-is.
+        # key_field: THE field to use for duplicate detection (primary key or unique field)
         if not self.client:
             raise Exception("Not connected to MongoDB.")
         collection = self.client[self.database][collection_name]
-        inserted_count = 0
+        upserted_count = 0
+        
         for doc in documents:
             try:
-                collection.insert_one(doc)
-                inserted_count += 1
-            except pymongo.errors.DuplicateKeyError as e:
-                print(f"✗ MongoDB insert failed: Duplicate key {str(e)[:80]}")
+                if key_field and key_field in doc:
+                    # Use update_one with upsert=True based on key field
+                    key_value = doc.get(key_field)
+                    if not key_value:
+                        print(f"✗ MongoDB upsert skipped: Document missing {key_field}")
+                        continue
+                    
+                    # Update entire document, or insert if not exists
+                    result = collection.update_one(
+                        {key_field: key_value},  # Filter by the key field
+                        {'$set': doc},            # Update all fields
+                        upsert=True               # Insert if doesn't exist
+                    )
+                    upserted_count += 1
+                else:
+                    # No key field - just insert (may fail on duplicate)
+                    collection.insert_one(doc)
+                    upserted_count += 1
+                    
             except Exception as e:
-                print(f"✗ MongoDB insert failed: {str(e)[:100]}")
-        if inserted_count > 0:
-            print(f"Inserted {inserted_count} documents into '{collection_name}'.")
-        return inserted_count 
+                print(f"✗ MongoDB upsert failed: {str(e)[:100]}")
+        
+        if upserted_count > 0:
+            print(f"Upserted {upserted_count} documents into '{collection_name}'.")
+        return upserted_count 
 
     def insert_one(self, collection_name, document):
         # Insert single document. Return inserted_id.
