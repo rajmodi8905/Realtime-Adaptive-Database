@@ -175,16 +175,17 @@ class Classifier:
             presence_ratio = field_stat.presence_count / total_records if total_records > 0 else 0.0
             unique_ratio = field_stat.unique_ratio
             
-            # Primary key must be present in most records and highly unique
-            if presence_ratio >= 0.9 and unique_ratio >= 0.9:
+            # Primary key MUST be present in ALL records (presence_ratio = 1.0)
+            # and should be highly unique
+            if presence_ratio >= 1.0 and unique_ratio >= 0.70:
                 # Prefer fields that look like identifiers
                 is_identifier = any(x in field_lower for x in 
                                   ['username', 'user_id', 'userid', 'id', 'uuid', 'key'])
                 
-                # Score = weighted combination
-                # identifier bonus (0.1), uniqueness (0.6), presence (0.3)
-                id_bonus = 0.1 if is_identifier else 0.0
-                score = id_bonus + (unique_ratio * 0.6) + (presence_ratio * 0.3)
+                # Score = identifier bonus + uniqueness only
+                # (presence_ratio is already 1.0 for all candidates, so excluded)
+                id_bonus = 0.2 if is_identifier else 0.0
+                score = id_bonus + (unique_ratio * 0.8)
                 
                 candidates.append({
                     'field_name': field_name,

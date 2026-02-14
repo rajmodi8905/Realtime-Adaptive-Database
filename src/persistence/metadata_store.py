@@ -123,7 +123,6 @@ class MetadataStore:
         # Define file paths
         self.decisions_file = self.storage_dir / "decisions.json"
         self.stats_file = self.storage_dir / "field_stats.json"
-        self.mappings_file = self.storage_dir / "name_mappings.json"
         self.state_file = self.storage_dir / "state.json"
 #   Methods:
 #   --------
@@ -134,13 +133,10 @@ class MetadataStore:
 #   - save_field_stats(stats: dict[str, FieldStats]) -> None
 #       Serialize field stats to JSON file.
 #
-#   - save_name_mappings(mappings: dict[str, str]) -> None
-#       Serialize field name mappings to JSON file.
-#
 #   - save_state(total_records: int) -> None
 #       Save pipeline state (record count, last flush time, etc.)
 #
-#   - save_all(decisions, stats, mappings, total_records) -> None
+#   - save_all(decisions, stats, total_records) -> None
 #       Convenience method to save everything at once.
 #
     def save_decisions(self, decisions: Dict[str, PlacementDecision]) -> None:
@@ -179,18 +175,6 @@ class MetadataStore:
         
         print(f"Saved stats for {len(stats)} fields to {self.stats_file}")
     
-    def save_name_mappings(self, mappings: Dict[str, str]) -> None:
-        """
-        Save field name mappings to disk.
-        
-        Args:
-            mappings: Dictionary mapping original_name -> canonical_name
-        """
-        with open(self.mappings_file, 'w') as f:
-            json.dump(mappings, f, indent=2)
-        
-        print(f"Saved {len(mappings)} name mappings to {self.mappings_file}")
-    
     def save_state(self, total_records: int) -> None:
         """
         Save pipeline state to disk.
@@ -213,7 +197,6 @@ class MetadataStore:
         self, 
         decisions: Dict[str, PlacementDecision],
         stats: Dict[str, FieldStats],
-        mappings: Dict[str, str],
         total_records: int
     ) -> None:
         """
@@ -222,12 +205,10 @@ class MetadataStore:
         Args:
             decisions: Placement decisions
             stats: Field statistics
-            mappings: Name mappings
             total_records: Total records processed
         """
         self.save_decisions(decisions)
         self.save_field_stats(stats)
-        self.save_name_mappings(mappings)
         self.save_state(total_records)
         print(f"All metadata saved successfully!")
 #   LOADING:
@@ -236,9 +217,6 @@ class MetadataStore:
 #
 #   - load_field_stats() -> dict[str, FieldStats]
 #       Deserialize field stats. Return empty dict if no file.
-#
-#   - load_name_mappings() -> dict[str, str]
-#       Deserialize mappings. Return empty dict if no file.
 #
 #   - load_state() -> dict
 #       Load pipeline state. Return defaults if no file.
@@ -294,24 +272,6 @@ class MetadataStore:
         print(f"Loaded stats for {len(stats)} fields from {self.stats_file}")
         return stats
     
-    def load_name_mappings(self) -> Dict[str, str]:
-        """
-        Load field name mappings from disk.
-        
-        Returns:
-            Dictionary mapping original_name -> canonical_name
-            Empty dict if file doesn't exist
-        """
-        if not self.mappings_file.exists():
-            print(f"No mappings file found at {self.mappings_file}")
-            return {}
-        
-        with open(self.mappings_file, 'r') as f:
-            mappings = json.load(f)
-        
-        print(f"Loaded {len(mappings)} name mappings from {self.mappings_file}")
-        return mappings
-    
     def load_state(self) -> Dict[str, Any]:
         """
         Load pipeline state from disk.
@@ -334,20 +294,19 @@ class MetadataStore:
         print(f"Loaded state from {self.state_file}")
         return state
     
-    def load_all(self) -> Tuple[Dict, Dict, Dict, Dict]:
+    def load_all(self) -> Tuple[Dict, Dict, Dict]:
         """
         Convenience method to load everything at once.
         
         Returns:
-            Tuple of (decisions, stats, mappings, state)
+            Tuple of (decisions, stats, state)
         """
         decisions = self.load_decisions()
         stats = self.load_field_stats()
-        mappings = self.load_name_mappings()
         state = self.load_state()
         
         print(f"All metadata loaded successfully!")
-        return decisions, stats, mappings, state
+        return decisions, stats, state
     
 #   UTILITY:
 #   - exists() -> bool
@@ -376,7 +335,6 @@ class MetadataStore:
         files_to_delete = [
             self.decisions_file,
             self.stats_file,
-            self.mappings_file,
             self.state_file
         ]
         
@@ -391,7 +349,6 @@ class MetadataStore:
 #   metadata/
 #   ├── decisions.json      → {field_name: {backend, sql_type, ...}}
 #   ├── field_stats.json    → {field_name: {presence_count, type_counts, ...}}
-#   ├── name_mappings.json  → {original_name: canonical_name}
 #   └── state.json          → {total_records, last_flush, ...}
 #
 # =============================================

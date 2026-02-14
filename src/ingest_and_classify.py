@@ -323,7 +323,6 @@ class IngestAndClassify:
             self._metadata_store.save_all(
                 decisions=self._decisions,
                 stats=field_stats,
-                mappings={},
                 total_records=self._total_records
             )
             
@@ -578,7 +577,7 @@ class IngestAndClassify:
         
         try:
             # Load all persisted metadata
-            decisions, stats, mappings, state = self._metadata_store.load_all()
+            decisions, stats, state = self._metadata_store.load_all()
             
             # Restore decisions
             self._decisions = decisions
