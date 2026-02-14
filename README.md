@@ -2,12 +2,16 @@
 
 A self-adaptive database framework that autonomously ingests a live JSON data stream, infers field types, classifies every field into **MySQL** (structured) or **MongoDB** (semi-structured), and routes records to the appropriate backend — all without hardcoded schemas.
 
-
 ---
 
-## 📚 Project Overview
+## Overview
 
-The system consumes health-tracker JSON records from a FastAPI data stream, normalises naming conventions, observes field patterns through statistical analysis, and dynamically decides which database backend each field belongs to. Linking fields (`username`, `sys_ingested_at`) are stored in **both** backends to enable cross-database joins.
+This framework solves the problem of handling heterogeneous JSON data streams where schema is unknown or evolving. Instead of requiring predefined schemas, the system:
+
+1. **Observes** incoming data to learn field patterns (types, presence rates, nesting)
+2. **Classifies** each field as SQL-suitable or document-suitable using heuristics
+3. **Routes** records to MySQL and/or MongoDB based on classification
+4. **Adapts** to schema evolution with automatic type widening and migrations
 
 ### Key Capabilities
 
@@ -15,15 +19,17 @@ The system consumes health-tracker JSON records from a FastAPI data stream, norm
 |---|---|
 | **Dynamic Schema Inference** | No predefined schemas — field types discovered from data |
 | **Adaptive Placement** | Heuristic rules decide SQL vs MongoDB per field |
-| **Cross-DB Linking** | `username` + `sys_ingested_at` in both backends for joins |
+| **Cross-DB Linking** | `username` + `sys_ingested_at` stored in both backends for joins |
+| **Upsert Handling** | Automatic primary key detection; updates existing records instead of duplicating |
+| **Crash Recovery** | JSONL write-ahead log ensures no data loss on failure |
+| **Type Widening** | Automatic INT→BIGINT, VARCHAR(50)→VARCHAR(255) migrations |
 | **Metadata Persistence** | Classification decisions survive process restarts |
-| **Bi-temporal Timestamps** | `t_stamp` (client) + `sys_ingested_at` (server) |
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
-The codebase is organized into **4 topics** + a final orchestrator:
+The codebase is organized into **4 topics** + a central orchestrator:
 
 ```
                          ┌──────────────────┐
@@ -38,22 +44,24 @@ The codebase is organized into **4 topics** + a final orchestrator:
  │  ┌──────────────────────────────────────────────────┐      │
  │  │ TOPIC 1 — NORMALIZATION              src/normalization/ │
  │  │  TypeDetector · RecordNormalizer                │      │
- │  │  • Detect IP vs float, UUID, datetime            │      │
+ │  │  • Detect semantic types (IP, UUID, datetime)   │      │
+ │  │  • Flatten nested structures                     │      │
  │  │  • Inject sys_ingested_at timestamp              │      │
- │  │  • Aggressive type coercion                      │      │
  │  └──────────────────┬───────────────────────────────┘      │
  │                     │ normalized records                    │
  │                     ▼                                       │
- │               ┌───────────┐                                 │
- │               │  BUFFER   │  in-memory staging              │
- │               └─────┬─────┘                                 │
- │                     │ flush (size or timeout)               │
- │                     ▼                                       │
+ │          ┌─────────────────────┐                            │
+ │          │  BUFFER + WAL       │  crash-safe staging        │
+ │          │  (pending.jsonl)    │                            │
+ │          └─────────┬───────────┘                            │
+ │                    │ flush (size/timeout)                   │
+ │                    ▼                                        │
  │  ┌──────────────────────────────────────────────────┐      │
  │  │ TOPIC 2 — ANALYSIS & CLASSIFICATION  src/analysis/      │
  │  │  FieldAnalyzer · FieldStats · Classifier         │      │
  │  │  • Track presence %, type stability, nesting     │      │
  │  │  • Apply heuristic rules → PlacementDecision     │      │
+ │  │  • Dynamic primary key assignment                │      │
  │  └──────────────────┬───────────────────────────────┘      │
  │                     │ decisions                             │
  │                     ▼                                       │
@@ -61,15 +69,15 @@ The codebase is organized into **4 topics** + a final orchestrator:
  │  │ TOPIC 3 — STORAGE                   src/storage/        │
  │  │  MySQLClient · MongoClient · RecordRouter        │      │
  │  │  • Dynamic CREATE TABLE / ALTER TABLE            │      │
- │  │  • Split record → SQL part + Mongo part          │      │
- │  │  • Batch insert into both backends               │      │
+ │  │  • Upsert with primary key deduplication         │      │
+ │  │  • Type migration (INT→BIGINT, etc.)             │      │
  │  └──────────────────┬───────────────────────────────┘      │
  │                     │                                       │
  │                     ▼                                       │
  │  ┌──────────────────────────────────────────────────┐      │
  │  │ TOPIC 4 — PERSISTENCE               src/persistence/   │
  │  │  MetadataStore                                   │      │
- │  │  • Save/load decisions, stats, mappings to JSON  │      │
+ │  │  • Save/load decisions, stats to JSON            │      │
  │  │  • Enables restart without re-analysis           │      │
  │  └──────────────────────────────────────────────────┘      │
  └────────────────────────────────────────────────────────────┘
@@ -84,56 +92,47 @@ The codebase is organized into **4 topics** + a final orchestrator:
 | 3 | Presence ≥ 70% AND type stability ≥ 90% | **SQL** |
 | 4 | Everything else | **MongoDB** |
 
+### Primary Key Selection
+
+The system automatically determines the best primary key from observed data:
+
+1. **Must be present in 100% of records** (not nullable)
+2. **Must have ≥90% unique values** (candidate key)
+3. **Prefers identifier-like names** (`*_id`, `*name`, `*key`, etc.)
+4. **Excludes timestamps** (not suitable as identifiers)
+
+This ensures upserts work correctly — when the same `username` appears again, the record is updated rather than duplicated.
+
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
 - **Python 3.12+**
 - **Docker & Docker Compose**
-- **pip** (Python package installer)
 
-### 1 · Clone and Navigate to Project
-
-```bash
-cd /path/to/Realtime-Adaptive-Database
-```
-
-### 2 · Configure Environment
+### 1. Clone and Navigate
 
 ```bash
-# .env file is already configured for Docker
-# Default settings:
-# - MySQL: localhost:3306 (user: root, password: rootpassword)
-# - MongoDB: localhost:27017 (no auth)
-# - Database name: adaptive_db (auto-created)
+git clone https://github.com/rajmodi8905/Realtime-Adaptive-Database.git
+cd Realtime-Adaptive-Database
 ```
 
-### 3 · Start Docker Databases
+### 2. Start Databases
 
 ```bash
-docker-compose up -d          # MySQL 8.0 + MongoDB 7.0
-docker ps                     # Verify containers are running
+docker-compose up -d
+docker ps  # Verify: adaptive_db_mysql, adaptive_db_mongodb
 ```
 
-You should see two containers running:
-- `adaptive_db_mysql` on port 3306
-- `adaptive_db_mongodb` on port 27017
-
-### 4 · Install Python Dependencies
+### 3. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-This installs:
-- `pymysql` - MySQL database connector
-- `pymongo` - MongoDB driver
-- `python-dotenv` - Environment variable loader
-- `requests` - HTTP client for data streams
-
-### 5 · Test the Pipeline
+### 4. Test the Pipeline
 
 ```bash
 python test_pipeline.py
@@ -144,435 +143,217 @@ Expected output:
 ============================================================
 Testing Adaptive Database Pipeline
 ============================================================
-
-1. Initializing pipeline...
 ✓ Pipeline initialized successfully
-
-2. Ingesting test record...
 ✓ Record ingested into buffer
-
-3. Pipeline Status:
-   - Buffer size: 1
-   - Total records processed: 0
-
-4. Flushing buffer and routing to databases...
 ✓ Flushed 1 records
-✓ Flush completed
-
-5. Classification Decisions:
    SQL fields: username, age, email, score, is_active
    MongoDB fields: metadata
    Both backends: username, sys_ingested_at
-
-6. Closing connections...
-✓ All tests passed! Pipeline is working correctly.
+✓ All tests passed!
 ============================================================
 ```
 
-### 6 · (Optional) Run with Data Stream API
-
-If you have access to the course data stream API:
+### 5. (Optional) Stream Live Data
 
 ```bash
-# In a separate terminal, start the data stream
-git clone https://github.com/YogeshKMeena/Course_Resources.git
-cd Course_Resources/CS432_Databases/Assignments/T2
-pip install -r requirements.txt
+# Start the course data stream API (separate terminal)
 uvicorn simulation_code:app --reload --port 8000
 
-# In your project terminal, use the streaming pipeline
-python -m src.pipeline
+# Stream records into the adaptive database
+python stream_from_api.py
 ```
 
 ---
 
-## 🗄️ Database Management
+## Crash Recovery
 
-### Connect to MySQL
+The system uses a **Write-Ahead Log (WAL)** for durability:
+
+1. Every ingested record is appended to `metadata/pending.jsonl` *before* buffering
+2. On successful flush, the WAL is cleared
+3. On restart, any pending records in the WAL are automatically recovered
+
+This ensures **no data loss** even if the process crashes mid-batch.
+
+---
+
+## Database Management
+
+### MySQL
 ```bash
-docker exec -it adaptive_db_mysql mysql -uroot -prootpassword
+docker exec -it adaptive_db_mysql mysql -uroot -prootpassword adaptive_db
 ```
-
 ```sql
-USE adaptive_db;
 SHOW TABLES;
 SELECT * FROM records LIMIT 10;
+DESCRIBE records;  -- See dynamically created schema
 ```
 
-### Connect to MongoDB
+### MongoDB
 ```bash
-docker exec -it adaptive_db_mongodb mongosh
+docker exec -it adaptive_db_mongodb mongosh adaptive_db
 ```
-
 ```javascript
-use adaptive_db
 db.records.find().limit(10)
 db.records.countDocuments()
-```
-
-### Stop/Restart Databases
-```bash
-docker-compose down              # Stop containers
-docker-compose down -v           # Stop and remove data volumes
-docker-compose restart           # Restart containers
-docker-compose logs -f mysql     # View MySQL logs
-docker-compose logs -f mongodb   # View MongoDB logs
+db.records.getIndexes()  // See auto-created unique index
 ```
 
 ---
 
-## � Programmatic Usage
+## Programmatic Usage
 
-### Using the Pipeline Class Directly
-
-The `IngestAndClassify` class provides the complete pipeline orchestration. For convenience, a `StreamingPipeline` wrapper is also available.
-
-#### Example 1: Basic Batch Processing
+### Basic Batch Processing
 
 ```python
 from src.ingest_and_classify import IngestAndClassify
 
-# Initialize pipeline (auto-loads config from .env)
 pipeline = IngestAndClassify()
 
-# Process records
 records = [
     {"username": "alice", "age": 30, "city": "NYC"},
     {"username": "bob", "score": 95.5, "metadata": {"level": 5}}
 ]
 
-# Ingest batch
+pipeline.ingest_batch(records)
+result = pipeline.flush()
+
+print(f"Processed: {result['records_processed']} records")
+print(f"SQL fields: {result['decisions_sql']}")
+print(f"Mongo fields: {result['decisions_mongo']}")
+
+pipeline.close()
+```
+
+### Streaming with Context Manager
+
+```python
+from src.pipeline import StreamingPipeline
+
+with StreamingPipeline() as pipeline:
+    summary = pipeline.start_streaming(max_records=100)
+    print(f"Rate: {summary['records_per_second']:.1f} rec/sec")
+```
+
+### Inspect Field Statistics
+
+```python
+pipeline = IngestAndClassify()
 pipeline.ingest_batch(records)
 
-# Check status
-status = pipeline.get_status()
-print(f"Buffer size: {status['buffer_size']}")
-print(f"Total processed: {status['total_records_processed']}")
-
-# Get classification summary
-summary = pipeline.get_classification_summary()
-print(f"SQL fields: {summary['counts']['sql']}")
-print(f"MongoDB fields: {summary['counts']['mongo']}")
-
-# Close connections
-pipeline.close()
-```
-
-#### Example 2: Streaming with Context Manager
-
-```python
-from src.pipeline import StreamingPipeline
-
-# Use context manager for automatic cleanup
-with StreamingPipeline() as pipeline:
-    # Stream 100 records from the data source
-    summary = pipeline.start_streaming(max_records=100)
-    
-    # Results are auto-flushed and connections closed
-    print(f"Rate: {summary['records_per_second']} rec/sec")
-```
-
-#### Example 3: Manual Record-by-Record Processing
-
-```python
-from src.ingest_and_classify import IngestAndClassify
-
-pipeline = IngestAndClassify()
-
-# Process one record at a time
-for i in range(100):
-    record = fetch_from_somewhere()  # Your data source
-    pipeline.ingest(record)
-    
-    # Manual flush when needed
-    if i % 50 == 0:
-        result = pipeline.flush()
-        print(f"Flushed: {result['records_processed']} records")
-
-# Get placement decisions
-decisions = pipeline.get_decisions()
-for field_name, decision in decisions.items():
-    print(f"{field_name} → {decision.backend.name} ({decision.reason})")
-
-pipeline.close()
-```
-
-#### Example 4: Inspect Field Statistics
-
-```python
-from src.ingest_and_classify import IngestAndClassify
-
-pipeline = IngestAndClassify()
-
-# Process some data
-pipeline.ingest_batch(your_records)
-
-# Get detailed field statistics
-field_stats = pipeline.get_field_stats()
-
-for field_name, stats in field_stats.items():
-    print(f"\nField: {field_name}")
-    print(f"  Presence: {stats.presence_count} records")
-    print(f"  Dominant type: {stats.dominant_type}")
-    print(f"  Type stability: {stats.type_stability:.2%}")
-    print(f"  Unique ratio: {stats.unique_ratio:.2%}")
-    print(f"  Is nested: {stats.is_nested}")
-
-pipeline.close()
-```
-
-#### Example 5: Using the Streaming Wrapper
-
-```python
-from src.pipeline import StreamingPipeline
-
-# Create pipeline
-pipeline = StreamingPipeline()
-
-# Option 1: Stream from configured data source
-pipeline.start_streaming(max_records=50, interval_seconds=0.1)
-
-# Option 2: Process your own batch
-my_records = [...]
-result = pipeline.process_batch(my_records)
-
-# Option 3: Process single records
-pipeline.process_single({"username": "test", "value": 123})
-
-# Check current status
-status = pipeline.get_pipeline_status()
-print(f"Will auto-flush: {status['will_auto_flush']}")
-
-# Get field placement decisions
-decisions = pipeline.get_field_decisions()
-
-# Cleanup
-pipeline.close()
-```
-
-#### Configuration Options
-
-The pipeline uses configuration from `.env` or can be passed directly:
-
-```python
-from src.config import AppConfig, MySQLConfig, MongoConfig, BufferConfig
-from src.ingest_and_classify import IngestAndClassify
-
-# Custom configuration
-config = AppConfig(
-    mysql=MySQLConfig(host="localhost", port=3306, database="my_db"),
-    mongo=MongoConfig(host="localhost", port=27017, database="my_db"),
-    buffer=BufferConfig(buffer_size=100, buffer_timeout_seconds=10.0),
-    data_stream_url="http://localhost:8000/GET/record",
-    metadata_dir="./my_metadata/"
-)
-
-pipeline = IngestAndClassify(config)
-```
-
-#### CLI Wrapper
-
-For quick testing, use the pipeline module directly:
-
-```bash
-# Run with sample data
-python -m src.pipeline
-
-# Or use the test script
-python test_pipeline.py
+for field, stats in pipeline.get_field_stats().items():
+    print(f"{field}: presence={stats.presence_ratio:.0%}, "
+          f"type_stability={stats.type_stability:.0%}, "
+          f"unique_ratio={stats.unique_ratio:.0%}")
 ```
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 .
 ├── src/
-│   ├── normalization/               # Topic 1
-│   │   ├── type_detector.py         #   TypeDetector     — semantic type detection
-│   │   └── record_normalizer.py     #   RecordNormalizer — full record pipeline
+│   ├── normalization/               # Topic 1: Type detection & normalization
+│   │   ├── type_detector.py         #   Semantic type detection (IP, UUID, etc.)
+│   │   └── record_normalizer.py     #   Flatten, coerce, inject timestamps
 │   │
-│   ├── analysis/                    # Topic 2
-│   │   ├── field_stats.py           #   FieldStats       — per-field statistics
-│   │   ├── field_analyzer.py        #   FieldAnalyzer    — observation engine
-│   │   ├── decision.py              #   PlacementDecision, Backend enum, thresholds
-│   │   └── classifier.py            #   Classifier       — heuristic rules
+│   ├── analysis/                    # Topic 2: Statistics & classification
+│   │   ├── field_stats.py           #   Per-field statistics tracking
+│   │   ├── field_analyzer.py        #   Observation engine
+│   │   ├── decision.py              #   PlacementDecision, Backend enum
+│   │   └── classifier.py            #   Heuristic classification rules
 │   │
-│   ├── storage/                     # Topic 3
-│   │   ├── mysql_client.py          #   MySQLClient      — dynamic DDL + inserts (PyMySQL)
-│   │   ├── mongo_client.py          #   MongoClient      — document inserts + indexes
-│   │   ├── record_router.py         #   RecordRouter     — split & route records
-│   │   └── migrator.py              #   Migrator         — type migration handler
+│   ├── storage/                     # Topic 3: Database operations
+│   │   ├── mysql_client.py          #   Dynamic DDL, upserts, migrations
+│   │   ├── mongo_client.py          #   Document inserts, unique indexes
+│   │   ├── record_router.py         #   Split & route records to backends
+│   │   └── migrator.py              #   Type widening handler
 │   │
-│   ├── persistence/                 # Topic 4
-│   │   └── metadata_store.py        #   MetadataStore    — JSON-based persistence
+│   ├── persistence/                 # Topic 4: Metadata persistence
+│   │   └── metadata_store.py        #   JSON-based state persistence
 │   │
-│   ├── config.py                    # Configuration (env vars / .env)
-│   ├── ingest_and_classify.py       # ★ IngestAndClassify orchestrator
-│   ├── pipeline.py                  # StreamingPipeline wrapper
-│   └── cli.py                       # CLI entry point (placeholder)
+│   ├── config.py                    # Configuration from .env
+│   ├── ingest_and_classify.py       # ★ Main orchestrator
+│   └── pipeline.py                  # StreamingPipeline wrapper
 │
-├── tests/
-│   ├── conftest.py                  # Shared fixtures
-│   └── test_*.py                    # Test suites
+├── metadata/                        # Persisted state (auto-created)
+│   ├── decisions.json               #   Field → backend mapping
+│   ├── field_stats.json             #   Per-field statistics
+│   ├── state.json                   #   Total records, last flush
+│   └── pending.jsonl                #   WAL for crash recovery
 │
-├── test_pipeline.py                 # Quick integration test
-├── requirements.txt                 # Python dependencies
 ├── docker-compose.yml               # MySQL 8.0 + MongoDB 7.0
-├── pyproject.toml                   # Poetry config (optional)
-├── .env                             # Environment configuration
-├── .env.example                     # Environment template
-└── README.md                        # This file
+├── requirements.txt                 # Python dependencies
+├── test_pipeline.py                 # Quick integration test
+└── stream_from_api.py               # Live data stream consumer
 ```
 
 ---
 
-## 🧪 Testing
+## Configuration
 
-### Quick Integration Test
-
-```bash
-# Run the included test pipeline
-python test_pipeline.py
-```
-
-### Running Test Suite
+Environment variables (`.env`):
 
 ```bash
-# All tests (requires pytest)
-pip install pytest pytest-cov
-pytest
+# MySQL
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=rootpassword
+MYSQL_DATABASE=adaptive_db
 
-# With coverage report
-pytest --cov=src --cov-report=term-missing
+# MongoDB
+MONGO_HOST=localhost
+MONGO_PORT=27017
+MONGO_DATABASE=adaptive_db
 
-# Specific test files
-pytest tests/test_normalization.py
-pytest tests/test_analysis.py
-pytest tests/test_storage.py
-pytest tests/test_integration.py
-```
+# Buffer
+BUFFER_SIZE=50           # Records before auto-flush
+BUFFER_TIMEOUT=30.0      # Seconds before auto-flush
 
----
-
-## 🔧 Development
-
-### Code Quality (Optional)
-
-If you want to use linting and formatting tools:
-
-```bash
-pip install ruff mypy
-ruff format .                 # Auto-format
-ruff check . --fix            # Lint + auto-fix
-mypy src/                     # Type checking
+# Data Stream
+DATA_STREAM_URL=http://localhost:8000/GET/record
 ```
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Docker Issues
-
-**Containers won't start:**
 ```bash
-# Check if ports are already in use
-lsof -i :3306  # MySQL
-lsof -i :27017 # MongoDB
-
-# View container logs
-docker-compose logs mysql
-docker-compose logs mongodb
+docker-compose logs mysql     # Check MySQL logs
+docker-compose logs mongodb   # Check MongoDB logs
+docker-compose down -v        # Reset everything (deletes data)
 ```
 
-**Database connection refused:**
+### Connection Refused
 ```bash
 # Wait for containers to be healthy
-docker-compose ps
-# Look for "Up (healthy)" status
-
-# Test MySQL connection
-docker exec -it adaptive_db_mysql mysql -uroot -prootpassword -e "SELECT 1"
-
-# Test MongoDB connection
-docker exec -it adaptive_db_mongodb mongosh --eval "db.version()"
+docker-compose ps  # Look for "Up (healthy)"
 ```
 
-### Python Issues
-
-**Module not found errors:**
+### Reset Pipeline State
 ```bash
-# Make sure you're in the project root
-pwd  # Should show .../Realtime-Adaptive-Database
-
-# Reinstall dependencies
-pip install -r requirements.txt
-
-# Verify installations
-pip list | grep -E "pymysql|pymongo|dotenv"
-```
-
-**pydantic build errors:**
-- The requirements.txt has been simplified to avoid pydantic compilation issues
-- If you see pydantic errors, they're only warnings from unused pyproject.toml
-
-### Pipeline Issues
-
-**KeyError or AttributeError:**
-- Make sure Docker containers are running
-- Check that .env file exists and has correct values
-- Run `python test_pipeline.py` to verify setup
-
-**Database permissions:**
-```bash
-# MySQL - check permissions
-docker exec -it adaptive_db_mysql mysql -uroot -prootpassword \
-  -e "SHOW GRANTS FOR 'root'@'%'"
-
-# MongoDB - no auth required for local development
+rm -rf metadata/              # Clear all persisted state
+docker-compose down -v        # Clear database data
+docker-compose up -d          # Restart fresh
 ```
 
 ---
 
-## 📖 References
+## Key Dependencies
 
-- [Course Project Document](./Databases_CS432__2026_%20Track%202.pdf)
-- [Data Stream API (Course Repo)](https://github.com/YogeshKMeena/Course_Resources/tree/main/CS432_Databases/Assignments/T2)
-- [API Endpoint](http://127.0.0.1:8000/GET/record/{count})
-
----
-
-## 📝 Key Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `pymysql` | 1.1.0 | MySQL database connector |
-| `pymongo` | 4.6.0 | MongoDB driver |
-| `python-dotenv` | 1.0.0 | Environment variable loader |
-| `requests` | 2.31.0 | HTTP client for data streams |
+| Package | Purpose |
+|---------|---------|
+| `pymysql` | MySQL connector |
+| `pymongo` | MongoDB driver |
+| `python-dotenv` | Environment configuration |
+| `requests` | HTTP client for data streams |
 
 ---
 
-## ✅ Quick Verification Checklist
-
-After setup, verify everything works:
-
-- [ ] Docker containers running: `docker ps` shows both MySQL and MongoDB
-- [ ] Python dependencies installed: `pip list | grep pymysql`
-- [ ] Config file exists: `cat .env` shows database settings
-- [ ] MySQL accessible: `docker exec -it adaptive_db_mysql mysql -uroot -prootpassword -e "SELECT 1"`
-- [ ] MongoDB accessible: `docker exec -it adaptive_db_mongodb mongosh --eval "db.version()"`
-- [ ] Test passes: `python test_pipeline.py` completes successfully
-
----
-
-## 🎓 Course Information
+## Course Information
 
 **Course:** CS432 Databases (Spring 2026)  
-**Track:** Track 2 - Adaptive Database Framework  
-**Institution:** [Your Institution Name]
-
----
-
-
+**Track:** Track 2 - Adaptive Database Framework
