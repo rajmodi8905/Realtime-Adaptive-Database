@@ -37,10 +37,10 @@ The codebase is organized into **4 topics** + a final orchestrator:
  │                                                            │
  │  ┌──────────────────────────────────────────────────┐      │
  │  │ TOPIC 1 — NORMALIZATION              src/normalization/ │
- │  │  FieldNormalizer · TypeDetector · RecordNormalizer│      │
- │  │  • camelCase/PascalCase → snake_case             │      │
+ │  │  TypeDetector · RecordNormalizer                │      │
  │  │  • Detect IP vs float, UUID, datetime            │      │
  │  │  • Inject sys_ingested_at timestamp              │      │
+ │  │  • Aggressive type coercion                      │      │
  │  └──────────────────┬───────────────────────────────┘      │
  │                     │ normalized records                    │
  │                     ▼                                       │
@@ -92,50 +92,131 @@ The codebase is organized into **4 topics** + a final orchestrator:
 
 - **Python 3.12+**
 - **Docker & Docker Compose**
-- **Poetry** (`pip install poetry`)
+- **pip** (Python package installer)
 
-### 1 · Start databases
+### 1 · Clone and Navigate to Project
 
 ```bash
-docker-compose up -d          # MySQL 8.0  +  MongoDB 7.0
+cd /path/to/Realtime-Adaptive-Database
 ```
 
-### 2 · Install dependencies
+### 2 · Configure Environment
 
 ```bash
-poetry install
+# .env file is already configured for Docker
+# Default settings:
+# - MySQL: localhost:3306 (user: root, password: rootpassword)
+# - MongoDB: localhost:27017 (no auth)
+# - Database name: adaptive_db (auto-created)
 ```
 
-### 3 · Configure environment
+### 3 · Start Docker Databases
 
 ```bash
-cp .env.example .env
-# Edit .env if you need non-default ports/passwords
+docker-compose up -d          # MySQL 8.0 + MongoDB 7.0
+docker ps                     # Verify containers are running
 ```
 
-### 4 · Run the data stream API (separate terminal)
+You should see two containers running:
+- `adaptive_db_mysql` on port 3306
+- `adaptive_db_mongodb` on port 27017
+
+### 4 · Install Python Dependencies
 
 ```bash
+pip install -r requirements.txt
+```
+
+This installs:
+- `pymysql` - MySQL database connector
+- `pymongo` - MongoDB driver
+- `python-dotenv` - Environment variable loader
+- `requests` - HTTP client for data streams
+
+### 5 · Test the Pipeline
+
+```bash
+python test_pipeline.py
+```
+
+Expected output:
+```
+============================================================
+Testing Adaptive Database Pipeline
+============================================================
+
+1. Initializing pipeline...
+✓ Pipeline initialized successfully
+
+2. Ingesting test record...
+✓ Record ingested into buffer
+
+3. Pipeline Status:
+   - Buffer size: 1
+   - Total records processed: 0
+
+4. Flushing buffer and routing to databases...
+✓ Flushed 1 records
+✓ Flush completed
+
+5. Classification Decisions:
+   SQL fields: username, age, email, score, is_active
+   MongoDB fields: metadata
+   Both backends: username, sys_ingested_at
+
+6. Closing connections...
+✓ All tests passed! Pipeline is working correctly.
+============================================================
+```
+
+### 6 · (Optional) Run with Data Stream API
+
+If you have access to the course data stream API:
+
+```bash
+# In a separate terminal, start the data stream
 git clone https://github.com/YogeshKMeena/Course_Resources.git
 cd Course_Resources/CS432_Databases/Assignments/T2
 pip install -r requirements.txt
 uvicorn simulation_code:app --reload --port 8000
+
+# In your project terminal, use the streaming pipeline
+python -m src.pipeline
 ```
 
-### 5 · Run the pipeline
+---
 
+## 🗄️ Database Management
+
+### Connect to MySQL
 ```bash
-# Ingest 100 records
-poetry run python -m src.cli ingest --count 100
+docker exec -it adaptive_db_mysql mysql -uroot -prootpassword
+```
 
-# Or run continuously
-poetry run python -m src.cli ingest --continuous --interval 0.5
+```sql
+USE adaptive_db;
+SHOW TABLES;
+SELECT * FROM records LIMIT 10;
+```
 
-# Check status
-poetry run python -m src.cli status
+### Connect to MongoDB
+```bash
+docker exec -it adaptive_db_mongodb mongosh
+```
 
-# View placement decisions
-poetry run python -m src.cli decisions
+```javascript
+use adaptive_db
+db.records.find().limit(10)
+db.records.countDocuments()
+```
+
+### Stop/Restart Databases
+```bash
+docker-compose down              # Stop containers
+docker-compose down -v           # Stop and remove data volumes
+docker-compose restart           # Restart containers
+docker-compose logs -f mysql     # View MySQL logs
+docker-compose logs -f mongodb   # View MongoDB logs
 ```
 
 ---
@@ -294,25 +375,21 @@ pipeline = IngestAndClassify(config)
 For quick testing, use the pipeline module directly:
 
 ```bash
-# Run demo with sample data
-poetry run python -m src.pipeline demo
+# Run with sample data
+python -m src.pipeline
 
-# Stream from data source
-poetry run python -m src.pipeline stream
-
-# Stream specific number of records
-poetry run python -m src.pipeline stream 100
+# Or use the test script
+python test_pipeline.py
 ```
 
 ---
 
-## �📁 Project Structure
+## 📁 Project Structure
 
 ```
 .
 ├── src/
 │   ├── normalization/               # Topic 1
-│   │   ├── field_normalizer.py      #   FieldNormalizer  — name canonicalization
 │   │   ├── type_detector.py         #   TypeDetector     — semantic type detection
 │   │   └── record_normalizer.py     #   RecordNormalizer — full record pipeline
 │   │
@@ -323,88 +400,179 @@ poetry run python -m src.pipeline stream 100
 │   │   └── classifier.py            #   Classifier       — heuristic rules
 │   │
 │   ├── storage/                     # Topic 3
-│   │   ├── mysql_client.py          #   MySQLClient      — dynamic DDL + inserts
+│   │   ├── mysql_client.py          #   MySQLClient      — dynamic DDL + inserts (PyMySQL)
 │   │   ├── mongo_client.py          #   MongoClient      — document inserts + indexes
-│   │   └── record_router.py         #   RecordRouter     — split & route records
+│   │   ├── record_router.py         #   RecordRouter     — split & route records
+│   │   └── migrator.py              #   Migrator         — type migration handler
 │   │
 │   ├── persistence/                 # Topic 4
 │   │   └── metadata_store.py        #   MetadataStore    — JSON-based persistence
 │   │
 │   ├── config.py                    # Configuration (env vars / .env)
 │   ├── ingest_and_classify.py       # ★ IngestAndClassify orchestrator
-│   └── cli.py                       # CLI entry point
+│   ├── pipeline.py                  # StreamingPipeline wrapper
+│   └── cli.py                       # CLI entry point (placeholder)
 │
 ├── tests/
 │   ├── conftest.py                  # Shared fixtures
-│   └── test_ingest_and_classify.py  # Test skeleton
+│   └── test_*.py                    # Test suites
 │
+├── test_pipeline.py                 # Quick integration test
+├── requirements.txt                 # Python dependencies
 ├── docker-compose.yml               # MySQL 8.0 + MongoDB 7.0
-├── pyproject.toml                   # Poetry config + ruff/mypy/pytest
+├── pyproject.toml                   # Poetry config (optional)
+├── .env                             # Environment configuration
 ├── .env.example                     # Environment template
-├── .pre-commit-config.yaml          # Ruff + mypy hooks
-└── .github/
-    ├── workflows/ci.yml             # Lint → Test CI pipeline
-    └── PULL_REQUEST_TEMPLATE.md
+└── README.md                        # This file
 ```
 
 ---
 
 ## 🧪 Testing
 
+### Quick Integration Test
+
 ```bash
-# All tests
-poetry run pytest
+# Run the included test pipeline
+python test_pipeline.py
+```
+
+### Running Test Suite
+
+```bash
+# All tests (requires pytest)
+pip install pytest pytest-cov
+pytest
 
 # With coverage report
-poetry run pytest --cov=src --cov-report=term-missing
+pytest --cov=src --cov-report=term-missing
 
-# Specific topic
-poetry run pytest tests/test_normalization.py
-poetry run pytest tests/test_analysis.py
-poetry run pytest tests/test_storage.py
-poetry run pytest tests/test_persistence.py
-
-# Integration tests only
-poetry run pytest -m integration
+# Specific test files
+pytest tests/test_normalization.py
+pytest tests/test_analysis.py
+pytest tests/test_storage.py
+pytest tests/test_integration.py
 ```
 
 ---
 
 ## 🔧 Development
 
-### Code Quality
+### Code Quality (Optional)
+
+If you want to use linting and formatting tools:
 
 ```bash
-poetry run ruff format .          # Auto-format
-poetry run ruff check . --fix     # Lint + auto-fix
-poetry run mypy src/              # Type checking
-```
-
-### Pre-commit Hooks
-
-```bash
-poetry run pre-commit install     # One-time setup
-poetry run pre-commit run --all-files   # Manual run
-```
-
-### Branching Convention
-
-```
-main                ← stable, passing CI
-├── topic1/…        ← normalization work
-├── topic2/…        ← analysis & classification work
-├── topic3/…        ← storage work
-└── topic4/…        ← persistence work
+pip install ruff mypy
+ruff format .                 # Auto-format
+ruff check . --fix            # Lint + auto-fix
+mypy src/                     # Type checking
 ```
 
 ---
 
+## 🐛 Troubleshooting
 
+### Docker Issues
+
+**Containers won't start:**
+```bash
+# Check if ports are already in use
+lsof -i :3306  # MySQL
+lsof -i :27017 # MongoDB
+
+# View container logs
+docker-compose logs mysql
+docker-compose logs mongodb
+```
+
+**Database connection refused:**
+```bash
+# Wait for containers to be healthy
+docker-compose ps
+# Look for "Up (healthy)" status
+
+# Test MySQL connection
+docker exec -it adaptive_db_mysql mysql -uroot -prootpassword -e "SELECT 1"
+
+# Test MongoDB connection
+docker exec -it adaptive_db_mongodb mongosh --eval "db.version()"
+```
+
+### Python Issues
+
+**Module not found errors:**
+```bash
+# Make sure you're in the project root
+pwd  # Should show .../Realtime-Adaptive-Database
+
+# Reinstall dependencies
+pip install -r requirements.txt
+
+# Verify installations
+pip list | grep -E "pymysql|pymongo|dotenv"
+```
+
+**pydantic build errors:**
+- The requirements.txt has been simplified to avoid pydantic compilation issues
+- If you see pydantic errors, they're only warnings from unused pyproject.toml
+
+### Pipeline Issues
+
+**KeyError or AttributeError:**
+- Make sure Docker containers are running
+- Check that .env file exists and has correct values
+- Run `python test_pipeline.py` to verify setup
+
+**Database permissions:**
+```bash
+# MySQL - check permissions
+docker exec -it adaptive_db_mysql mysql -uroot -prootpassword \
+  -e "SHOW GRANTS FOR 'root'@'%'"
+
+# MongoDB - no auth required for local development
+```
+
+---
 
 ## 📖 References
 
 - [Course Project Document](./Databases_CS432__2026_%20Track%202.pdf)
 - [Data Stream API (Course Repo)](https://github.com/YogeshKMeena/Course_Resources/tree/main/CS432_Databases/Assignments/T2)
 - [API Endpoint](http://127.0.0.1:8000/GET/record/{count})
+
+---
+
+## 📝 Key Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `pymysql` | 1.1.0 | MySQL database connector |
+| `pymongo` | 4.6.0 | MongoDB driver |
+| `python-dotenv` | 1.0.0 | Environment variable loader |
+| `requests` | 2.31.0 | HTTP client for data streams |
+
+---
+
+## ✅ Quick Verification Checklist
+
+After setup, verify everything works:
+
+- [ ] Docker containers running: `docker ps` shows both MySQL and MongoDB
+- [ ] Python dependencies installed: `pip list | grep pymysql`
+- [ ] Config file exists: `cat .env` shows database settings
+- [ ] MySQL accessible: `docker exec -it adaptive_db_mysql mysql -uroot -prootpassword -e "SELECT 1"`
+- [ ] MongoDB accessible: `docker exec -it adaptive_db_mongodb mongosh --eval "db.version()"`
+- [ ] Test passes: `python test_pipeline.py` completes successfully
+
+---
+
+## 🎓 Course Information
+
+**Course:** CS432 Databases (Spring 2026)  
+**Track:** Track 2 - Adaptive Database Framework  
+**Institution:** [Your Institution Name]
+
+---
 
 

@@ -1,0 +1,9 @@
+# Core dependencies for Adaptive Database Framework
+pymysql==1.1.0
+pymongo==4.6.0
+python-dotenv==1.0.0
+
+# HTTP client (optional - only needed for data stream)
+requests==2.31.0
+
+# Note: pydantic and httpx removed since they're not actually used in the core code

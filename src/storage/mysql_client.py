@@ -61,8 +61,9 @@
 # ==============================================
 
 from typing import Any, Tuple, cast
-import mysql.connector
-from analysis.decision import PlacementDecision, Backend
+import pymysql
+import pymysql.cursors
+from src.analysis.decision import PlacementDecision, Backend
 
 class MySQLClient:
     def __init__(self, host, port, user, password, database):
@@ -74,7 +75,7 @@ class MySQLClient:
         self.connection = None
     def connect(self) -> None:
         # Establish connection to MySQL, create database if it doesn't exist
-        self.connection = mysql.connector.connect(
+        self.connection = pymysql.connect(
             host=self.host,
             port=self.port,
             user=self.user,
@@ -92,7 +93,7 @@ class MySQLClient:
     def ensure_table(self, table_name: str, decisions: dict[str, PlacementDecision]) -> None:
         # Create table if it doesn't exist, or ALTER TABLE to add new columns
         if self.connection is not None:
-            cursor = self.connection.cursor(dictionary=False)
+            cursor = self.connection.cursor()
             # Check if table exists
             cursor.execute(
                 "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
@@ -140,17 +141,21 @@ class MySQLClient:
         # Insert multiple records, return count inserted
         if self.connection is not None and records:
             cursor = self.connection.cursor()
-            # Get columns from first record (assuming all have same keys)
+            inserted_count = 0
             for record in records:
-                columns = record.keys()
-                placeholders = ", ".join(['%s'] * len(columns))
-                column_names = ", ".join(columns)
-                query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
-                # values = [tuple(record[col] for col in columns) for record in records]
-                values = record.values()
-                cursor.execute(query, tuple(values))
-                self.connection.commit()
-            inserted_count = cursor.rowcount
+                try:
+                    columns = record.keys()
+                    placeholders = ", ".join(['%s'] * len(columns))
+                    column_names = ", ".join(columns)
+                    query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
+                    values = record.values()
+                    cursor.execute(query, tuple(values))
+                    self.connection.commit()
+                    inserted_count += 1
+                except Exception as e:
+                    # Log error but continue with other records
+                    print(f"✗ MySQL insert failed: {str(e)[:100]}")
+                    self.connection.rollback()
             cursor.close()
             return inserted_count
         else:
@@ -159,7 +164,7 @@ class MySQLClient:
     def get_current_columns(self, table_name: str) -> dict[str, str]:
         # Query INFORMATION_SCHEMA to get current column names and types
         if self.connection is not None:
-            cursor = self.connection.cursor(buffered=True)
+            cursor = self.connection.cursor()
             cursor.execute(
                 "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
                 "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
@@ -187,7 +192,7 @@ class MySQLClient:
     def fetch_all(self, query: str, params: tuple | None = None) -> list[dict]:
         # Execute SELECT and return rows as dicts
         if self.connection is not None:
-            cursor = self.connection.cursor(dictionary=True)
+            cursor = self.connection.cursor(pymysql.cursors.DictCursor)
             if params is not None:
                 cursor.execute(query, params)
             else:
@@ -197,6 +202,73 @@ class MySQLClient:
             return results
         else:
             return []
+    def migrate_field_type(
+        self, 
+        table_name: str, 
+        field_name: str, 
+        old_type: str,
+        new_type: str,
+        new_sql_type: str
+    ) -> int:
+        """
+        Migrate a field from one type to another.
+        
+        Args:
+            table_name: Name of the table
+            field_name: Name of the field to migrate
+            old_type: Old canonical type (int, float, str, etc.)
+            new_type: New canonical type to convert to
+            new_sql_type: New SQL column type (VARCHAR(255), etc.)
+            
+        Returns:
+            Number of records migrated
+        """
+        if not self.connection:
+            raise RuntimeError("Not connected to MySQL")
+        
+        cursor = self.connection.cursor(pymysql.cursors.DictCursor)
+        
+        # Step 1: Fetch all records
+        query = f"SELECT * FROM {table_name}"
+        cursor.execute(query)
+        records = cursor.fetchall()
+        
+        if not records:
+            cursor.close()
+            return 0
+        
+        # Step 2: Convert values
+        converted_records = []
+        for record in records:
+            if field_name in record and record[field_name] is not None:
+                old_value = record[field_name]
+                # Convert to new type
+                if new_type == "str":
+                    record[field_name] = str(old_value)
+                elif new_type == "float":
+                    record[field_name] = float(old_value)
+                elif new_type == "int":
+                    record[field_name] = int(old_value)
+            converted_records.append(record)
+        
+        # Step 3: ALTER TABLE
+        alter_query = f"ALTER TABLE {table_name} MODIFY COLUMN {field_name} {new_sql_type}"
+        cursor.execute(alter_query)
+        self.connection.commit()
+        
+        # Step 4: Update all records with converted values
+        for record in converted_records:
+            # Build UPDATE query
+            set_clause = ", ".join([f"{col} = %s" for col in record.keys()])
+            update_query = f"UPDATE {table_name} SET {set_clause} WHERE username = %s AND sys_ingested_at = %s"
+            values = list(record.values()) + [record['username'], record['sys_ingested_at']]
+            cursor.execute(update_query, tuple(values))
+        
+        self.connection.commit()
+        cursor.close()
+        
+        return len(converted_records)
+
     def __enter__(self):
         self.connect()
         return self

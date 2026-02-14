@@ -98,9 +98,9 @@ class MongoClient:
         db = self.client[self.database]
         collection = db[collection_name]
         
-        # Create unique indexes for each field individually
+        # Create unique index on username only (sys_ingested_at is not unique)
         collection.create_index("username", unique=True)
-        collection.create_index("sys_ingested_at", unique=True)
+        collection.create_index("sys_ingested_at", unique=False)
         
         # Enforce NOT NULL using schema validator
         validator = {
@@ -136,9 +136,18 @@ class MongoClient:
         if not self.client:
             raise Exception("Not connected to MongoDB.")
         collection = self.client[self.database][collection_name]
-        result = collection.insert_many(documents)
-        print(f"Inserted {len(result.inserted_ids)} documents into '{collection_name}'.")
-        return len(result.inserted_ids) 
+        inserted_count = 0
+        for doc in documents:
+            try:
+                collection.insert_one(doc)
+                inserted_count += 1
+            except pymongo.errors.DuplicateKeyError as e:
+                print(f"✗ MongoDB insert failed: Duplicate key {str(e)[:80]}")
+            except Exception as e:
+                print(f"✗ MongoDB insert failed: {str(e)[:100]}")
+        if inserted_count > 0:
+            print(f"Inserted {inserted_count} documents into '{collection_name}'.")
+        return inserted_count 
 
     def insert_one(self, collection_name, document):
         # Insert single document. Return inserted_id.
@@ -156,6 +165,77 @@ class MongoClient:
         collection = self.client[self.database][collection_name]
         results = collection.find(query)
         return list(results)
+
+    def migrate_field_type(
+        self, 
+        collection_name: str, 
+        field_name: str, 
+        old_type: str,
+        new_type: str
+    ) -> int:
+        """
+        Migrate a field from one type to another in MongoDB.
+        
+        Args:
+            collection_name: Name of the collection
+            field_name: Name of the field to migrate (can be nested with dots)
+            old_type: Old canonical type (int, float, str, etc.)
+            new_type: New canonical type to convert to
+            
+        Returns:
+            Number of documents migrated
+        """
+        if not self.client:
+            raise Exception("Not connected to MongoDB")
+        
+        collection = self.client[self.database][collection_name]
+        
+        # Find all documents that have this field
+        query = {field_name: {"$exists": True}}
+        documents = list(collection.find(query))
+        
+        if not documents:
+            return 0
+        
+        # Convert and update each document
+        updated_count = 0
+        for doc in documents:
+            # Handle nested fields (e.g., "metadata.sensor.version")
+            field_parts = field_name.split(".")
+            
+            # Navigate to the field
+            obj = doc
+            for part in field_parts[:-1]:
+                if part in obj:
+                    obj = obj[part]
+                else:
+                    break
+            
+            # Get the field value
+            last_part = field_parts[-1]
+            if last_part in obj and obj[last_part] is not None:
+                old_value = obj[last_part]
+                
+                # Convert to new type
+                try:
+                    if new_type == "str":
+                        obj[last_part] = str(old_value)
+                    elif new_type == "float":
+                        obj[last_part] = float(old_value)
+                    elif new_type == "int":
+                        obj[last_part] = int(old_value)
+                    
+                    # Update document
+                    collection.update_one(
+                        {"_id": doc["_id"]},
+                        {"$set": {field_name: obj[last_part]}}
+                    )
+                    updated_count += 1
+                except (ValueError, TypeError):
+                    # Skip documents that can't be converted
+                    continue
+        
+        return updated_count
 
     def __enter__(self):
         # For `with MongoClient(...) as db:` usage.
