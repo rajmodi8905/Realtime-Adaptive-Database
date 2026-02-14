@@ -5,6 +5,9 @@ Stream data from the synthetic data API into the adaptive database pipeline
 
 import requests
 import time
+import json
+import os
+from datetime import datetime
 from src.ingest_and_classify import IngestAndClassify
 from src.config import get_config
 
@@ -34,6 +37,7 @@ def stream_data(api_url: str = "http://127.0.0.1:8000/", max_records: int = None
     records_ingested = 0
     errors = 0
     start_time = time.time()
+    raw_records = []  # Collect raw data for JSON export
     
     try:
         while max_records is None or records_ingested < max_records:
@@ -42,6 +46,9 @@ def stream_data(api_url: str = "http://127.0.0.1:8000/", max_records: int = None
                 response = requests.get(api_url, timeout=10)
                 response.raise_for_status()
                 record = response.json()
+                
+                # Store raw record
+                raw_records.append(record)
                 
                 # Ingest into pipeline
                 pipeline.ingest(record)
@@ -96,8 +103,17 @@ def stream_data(api_url: str = "http://127.0.0.1:8000/", max_records: int = None
     if summary.get('both_fields'):
         print(f"   Both backends: {len(summary['both_fields'])}")
     
+    # Save raw data to JSON
+    print("\n7. Saving raw data to JSON...")
+    os.makedirs("raw_data", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    raw_data_path = f"raw_data/stream_{timestamp}.json"
+    with open(raw_data_path, "w") as f:
+        json.dump(raw_records, f, indent=2)
+    print(f"   ✓ Saved {len(raw_records)} records to {raw_data_path}")
+    
     # Cleanup
-    print("\n7. Closing connections...")
+    print("\n8. Closing connections...")
     pipeline.close()
     print("✓ Connections closed")
     
@@ -132,6 +148,7 @@ def stream_batch(api_url: str = "http://127.0.0.1:8000/record/100", count: int =
         
         records_ingested = 0
         start_time = time.time()
+        raw_records = []  # Collect raw data for JSON export
         
         # Parse SSE stream
         for line in response.iter_lines():
@@ -141,6 +158,7 @@ def stream_batch(api_url: str = "http://127.0.0.1:8000/record/100", count: int =
                     json_str = decoded[5:].strip()
                     try:
                         record = eval(json_str)  # API sends single-quoted JSON
+                        raw_records.append(record)
                         pipeline.ingest(record)
                         records_ingested += 1
                         
@@ -163,8 +181,17 @@ def stream_batch(api_url: str = "http://127.0.0.1:8000/record/100", count: int =
         print(f"   - Time elapsed: {elapsed:.1f}s")
         print(f"   - Average rate: {records_ingested/elapsed:.1f} records/sec")
         
+        # Save raw data to JSON
+        print("\n5. Saving raw data to JSON...")
+        os.makedirs("raw_data", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        raw_data_path = f"raw_data/batch_{timestamp}.json"
+        with open(raw_data_path, "w") as f:
+            json.dump(raw_records, f, indent=2)
+        print(f"   ✓ Saved {len(raw_records)} records to {raw_data_path}")
+        
         # Cleanup
-        print("\n5. Closing connections...")
+        print("\n6. Closing connections...")
         pipeline.close()
         print("✓ Connections closed")
         
@@ -174,6 +201,14 @@ def stream_batch(api_url: str = "http://127.0.0.1:8000/record/100", count: int =
         
     except Exception as e:
         print(f"\n✗ Error: {e}")
+        # Save whatever raw data was collected before the error
+        if raw_records:
+            os.makedirs("raw_data", exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            raw_data_path = f"raw_data/batch_{timestamp}_partial.json"
+            with open(raw_data_path, "w") as f:
+                json.dump(raw_records, f, indent=2)
+            print(f"   ✓ Saved {len(raw_records)} partial records to {raw_data_path}")
         pipeline.close()
 
 

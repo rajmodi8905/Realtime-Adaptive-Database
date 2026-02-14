@@ -82,6 +82,7 @@ class BufferConfig:
     """Buffer configuration for record batching."""
     buffer_size: int = 50
     buffer_timeout_seconds: float = 5.0
+    wal_file: str = "metadata/pending.jsonl"  # Write-ahead log for crash recovery
 
 
 @dataclass

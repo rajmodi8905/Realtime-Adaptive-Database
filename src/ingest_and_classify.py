@@ -111,7 +111,10 @@
 # ==============================================
 
 import time
+import json
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from src.config import AppConfig, get_config
@@ -119,10 +122,11 @@ from src.normalization.type_detector import TypeDetector
 from src.normalization.record_normalizer import RecordNormalizer
 from src.analysis.field_analyzer import FieldAnalyzer
 from src.analysis.classifier import Classifier
-from src.analysis.decision import PlacementDecision, ClassificationThresholds
+from src.analysis.decision import PlacementDecision, ClassificationThresholds, Backend
 from src.storage.mysql_client import MySQLClient
 from src.storage.mongo_client import MongoClient
 from src.storage.record_router import RecordRouter
+from src.storage.migrator import Migrator
 from src.persistence.metadata_store import MetadataStore
 
 
@@ -181,6 +185,7 @@ class IngestAndClassify:
             self._mysql_client,
             self._mongo_client
         )
+        self._migrator = Migrator()
         
         # TOPIC 4: Persistence
         self._metadata_store = MetadataStore(self._config.metadata_dir)
@@ -193,8 +198,15 @@ class IngestAndClassify:
         self._total_records = 0
         self._decisions: dict[str, PlacementDecision] = {}
         
+        # Write-ahead log for crash recovery
+        self._wal_path = Path(self._config.buffer.wal_file)
+        self._wal_path.parent.mkdir(parents=True, exist_ok=True)
+        
         # Load previous state if exists
         self._load_previous_state()
+        
+        # Recover any pending records from WAL (crash recovery)
+        self._recover_from_wal()
         
         print(f"✓ Pipeline initialized (buffer size: {self._buffer_size}, timeout: {self._buffer_timeout}s)")
         if self._decisions:
@@ -212,6 +224,9 @@ class IngestAndClassify:
         """
         # TOPIC 1: Normalize the record
         normalized = self._record_normalizer.normalize(raw_record)
+        
+        # Write to WAL for crash recovery (before adding to buffer)
+        self._append_to_wal(normalized)
         
         # Add to buffer
         self._buffer.append(normalized)
@@ -232,6 +247,10 @@ class IngestAndClassify:
         """
         # TOPIC 1: Normalize all records
         normalized_batch = self._record_normalizer.normalize_batch(raw_records)
+        
+        # Write to WAL for crash recovery (before adding to buffer)
+        for record in normalized_batch:
+            self._append_to_wal(record)
         
         # Add to buffer
         self._buffer.extend(normalized_batch)
@@ -268,13 +287,16 @@ class IngestAndClassify:
         buffer_size = len(self._buffer)
         
         try:
+            # Save old decisions to detect backend changes
+            old_decisions = self._decisions.copy()
+            
             # TOPIC 2: Analyze the buffered records
             self._field_analyzer.analyze_batch(self._buffer)
             field_stats = self._field_analyzer.get_stats()
             
             # TOPIC 2: Classify fields based on analysis
             total_records = self._field_analyzer.total_records
-            self._decisions = self._classifier.classify_all(
+            new_decisions = self._classifier.classify_all(
                 field_stats,
                 total_records
             )
@@ -282,6 +304,12 @@ class IngestAndClassify:
             # TOPIC 3: Connect to databases and route records
             self._mysql_client.connect()
             self._mongo_client.connect()
+            
+            # Detect and handle backend changes (migrate existing data)
+            migrations = self._handle_backend_changes(old_decisions, new_decisions)
+            
+            # Update decisions after migration
+            self._decisions = new_decisions
             
             route_result = self._record_router.route_batch(
                 self._buffer,
@@ -299,8 +327,9 @@ class IngestAndClassify:
                 total_records=self._total_records
             )
             
-            # Clear buffer and update timestamp
+            # Clear buffer and WAL, update timestamp
             self._buffer.clear()
+            self._clear_wal()  # Clear WAL after successful flush
             self._last_flush_time = time.time()
             
             elapsed = time.time() - start_time
@@ -415,6 +444,58 @@ class IngestAndClassify:
             }
         }
 
+    def _handle_backend_changes(
+        self,
+        old_decisions: dict[str, PlacementDecision],
+        new_decisions: dict[str, PlacementDecision]
+    ) -> list[dict]:
+        """
+        Detect and handle backend changes by migrating existing data.
+        
+        Args:
+            old_decisions: Previous placement decisions
+            new_decisions: New placement decisions after re-classification
+            
+        Returns:
+            List of migration results for changed fields
+        """
+        migrations = []
+        
+        for field_name, new_decision in new_decisions.items():
+            old_decision = old_decisions.get(field_name)
+            
+            # Skip if field is new (no old decision)
+            if old_decision is None:
+                continue
+            
+            # Skip if backend hasn't changed
+            if old_decision.backend == new_decision.backend:
+                continue
+            
+            # Backend changed - trigger migration
+            print(f"⟳ Backend change detected for '{field_name}': "
+                  f"{old_decision.backend.value} → {new_decision.backend.value}")
+            
+            result = self._migrator.migrate_backend(
+                field_name=field_name,
+                old_backend=old_decision.backend,
+                new_backend=new_decision.backend,
+                new_decision=new_decision,
+                mysql_client=self._mysql_client,
+                mongo_client=self._mongo_client,
+                table_name="records",
+                collection_name="records"
+            )
+            
+            migrations.append(result)
+            
+            if result["success"]:
+                print(f"  ✓ Migrated {result['records_migrated']} records")
+            else:
+                print(f"  ✗ Migration failed: {result['error']}")
+        
+        return migrations
+
     def _should_flush(self) -> bool:
         """
         Check if buffer should be flushed based on size or time threshold.
@@ -432,6 +513,55 @@ class IngestAndClassify:
             return True
         
         return False
+
+    def _append_to_wal(self, record: dict) -> None:
+        """
+        Append a record to the Write-Ahead Log for crash recovery.
+        
+        Args:
+            record: Normalized record to persist.
+        """
+        try:
+            with open(self._wal_path, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as e:
+            # Log but don't fail - WAL is a safety net, not critical path
+            print(f"⚠ WAL write warning: {e}")
+
+    def _clear_wal(self) -> None:
+        """
+        Clear the Write-Ahead Log after successful flush.
+        """
+        try:
+            if self._wal_path.exists():
+                self._wal_path.unlink()
+        except Exception as e:
+            print(f"⚠ WAL clear warning: {e}")
+
+    def _recover_from_wal(self) -> None:
+        """
+        Recover pending records from WAL after a crash/restart.
+        If WAL contains records, they are loaded into the buffer for processing.
+        """
+        if not self._wal_path.exists():
+            return
+        
+        try:
+            recovered_records = []
+            with open(self._wal_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        recovered_records.append(json.loads(line))
+            
+            if recovered_records:
+                print(f"⚠ Recovering {len(recovered_records)} records from WAL (previous crash detected)")
+                self._buffer.extend(recovered_records)
+                # Flush immediately to persist recovered records
+                if self._buffer:
+                    self.flush()
+        except Exception as e:
+            print(f"⚠ WAL recovery warning: {e}")
 
     def _load_previous_state(self) -> None:
         """

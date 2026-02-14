@@ -100,28 +100,24 @@ class RecordRouter:
                 result.sql_inserts += inserted_sql
             except Exception as e:
                 result.errors.append(f"Error inserting SQL batch: {str(e)}")
-                print(mongo_batch)
         if mongo_batch:
             try:
                 self.mongo_client.ensure_indexes(collection_name)
                 inserted_mongo = self.mongo_client.insert_batch(collection_name, mongo_batch)
-                print(mongo_batch)
                 result.mongo_inserts += inserted_mongo
             except Exception as e:
                 result.errors.append(f"Error inserting MongoDB batch: {str(e)}")
         return result
 
     def _split_record(self, record: dict, decisions: dict[str, PlacementDecision]) -> tuple[dict, dict]:
-        # Split one record into (sql_dict, mongo_dict, buffer_dict).
+        # Split one record into (sql_dict, mongo_dict).
         # Rules:
-        #   - Backend.SQL    → goes to sql_dict only
+        #   - Backend.SQL     → goes to sql_dict only
         #   - Backend.MONGODB → goes to mongo_dict only
-        #   - Backend.BOTH   → goes to BOTH dicts
-        #   - Backend.BUFFER → goes to buffer_dict only
-        #   - Unknown field  → goes to mongo_dict (safe default)
+        #   - Backend.BOTH    → goes to BOTH dicts
+        #   - Unknown field   → goes to mongo_dict (safe default)
         sql_dict = {}
         mongo_dict = {}
-        buffer_dict = {}
         for field, value in record.items():
             decision = decisions.get(field)
             if decision is None:
@@ -134,12 +130,8 @@ class RecordRouter:
             elif decision.backend == Backend.BOTH:
                 sql_dict[field] = value
                 mongo_dict[field] = value
-            elif decision.backend == Backend.BUFFER:
-                buffer_dict[field] = value
             else:
                 raise ValueError(f"Invalid placement decision for field '{field}': {decision}")
-            if (buffer_dict !=  {}):
-                mongo_dict["__buffer__"] = buffer_dict
         return sql_dict, mongo_dict
 
     
