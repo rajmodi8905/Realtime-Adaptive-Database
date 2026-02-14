@@ -98,9 +98,9 @@ class MongoClient:
         db = self.client[self.database]
         collection = db[collection_name]
         
-        # Create unique indexes for each field individually
+        # Create unique index on username only (sys_ingested_at is not unique)
         collection.create_index("username", unique=True)
-        collection.create_index("sys_ingested_at", unique=True)
+        collection.create_index("sys_ingested_at", unique=False)
         
         # Enforce NOT NULL using schema validator
         validator = {
@@ -136,9 +136,18 @@ class MongoClient:
         if not self.client:
             raise Exception("Not connected to MongoDB.")
         collection = self.client[self.database][collection_name]
-        result = collection.insert_many(documents)
-        print(f"Inserted {len(result.inserted_ids)} documents into '{collection_name}'.")
-        return len(result.inserted_ids) 
+        inserted_count = 0
+        for doc in documents:
+            try:
+                collection.insert_one(doc)
+                inserted_count += 1
+            except pymongo.errors.DuplicateKeyError as e:
+                print(f"✗ MongoDB insert failed: Duplicate key {str(e)[:80]}")
+            except Exception as e:
+                print(f"✗ MongoDB insert failed: {str(e)[:100]}")
+        if inserted_count > 0:
+            print(f"Inserted {inserted_count} documents into '{collection_name}'.")
+        return inserted_count 
 
     def insert_one(self, collection_name, document):
         # Insert single document. Return inserted_id.

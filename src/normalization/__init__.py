@@ -16,6 +16,5 @@
 
 from .type_detector import TypeDetector
 from .record_normalizer import RecordNormalizer
-from .field_normalizer import FieldNormalizer
 
-__all__ = ["TypeDetector", "RecordNormalizer", "FieldNormalizer"]
+__all__ = ["TypeDetector", "RecordNormalizer"]

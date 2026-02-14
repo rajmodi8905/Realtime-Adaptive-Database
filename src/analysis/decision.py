@@ -71,7 +71,13 @@ class PlacementDecision:
         reason: str = ""
     ):
         self.field_name = field_name
-        self.backend = backend
+        # Ensure backend is always a Backend enum
+        if isinstance(backend, str):
+            self.backend = Backend(backend)
+        elif isinstance(backend, Backend):
+            self.backend = backend
+        else:
+            raise TypeError(f"backend must be Backend enum or string, got {type(backend)}")
         self.sql_type = sql_type
         self.sql_column_name = sql_column_name
         self.mongo_path = mongo_path

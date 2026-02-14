@@ -221,17 +221,27 @@ class StreamingPipeline:
         USES:
             - Topic 2 (analysis/): PlacementDecision objects from Classifier
         """
+        from src.analysis.decision import Backend
+        
         decisions = self._pipeline.get_decisions()
-        return {
-            name: {
-                "backend": decision.backend.name,
+        result = {}
+        for name, decision in decisions.items():
+            # Handle both Backend enum and string values
+            if isinstance(decision.backend, Backend):
+                backend_name = decision.backend.name
+            elif isinstance(decision.backend, str):
+                backend_name = decision.backend
+            else:
+                backend_name = str(decision.backend)
+                
+            result[name] = {
+                "backend": backend_name,
                 "sql_type": decision.sql_type,
                 "nullable": decision.is_nullable,
                 "unique": decision.is_unique,
                 "reason": decision.reason
             }
-            for name, decision in decisions.items()
-        }
+        return result
     
     def _fetch_record(self) -> Optional[dict]:
         """

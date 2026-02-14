@@ -228,8 +228,12 @@ class Classifier:
             ):
                 # STABLE SCALAR → SQL
                 sql_type = self._determine_sql_type(stats)
-                is_unique = unique_ratio > self.thresholds.max_unique_ratio
-                is_nullable = stats.null_count > 0
+                # Only mark as unique if field name suggests it's an ID AND it's highly unique
+                field_lower = field_name.lower()
+                is_id_field = any(x in field_lower for x in ['_id', 'id_', 'uuid', 'key'])
+                is_unique = is_id_field and unique_ratio > self.thresholds.max_unique_ratio
+                # Nullable if field has nulls OR is not present in all records
+                is_nullable = stats.null_count > 0 or presence_ratio < 1.0
 
                 reason = (
                     f"Scalar field '{field_name}' is structured: "

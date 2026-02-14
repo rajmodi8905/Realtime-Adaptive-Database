@@ -14,8 +14,7 @@
 #   │                                                          │
 #   │  ┌──────────────────────────────────────────────┐        │
 #   │  │ TOPIC 1: NORMALIZATION                       │        │
-#   │  │  FieldNormalizer → TypeDetector →             │        │
-#   │  │  RecordNormalizer                             │        │
+#   │  │  TypeDetector → RecordNormalizer             │        │
 #   │  └──────────────┬───────────────────────────────┘        │
 #   │                 │ normalized records                     │
 #   │                 ▼                                        │
@@ -49,7 +48,7 @@
 #   ------------
 #   - __init__(config: AppConfig | None = None)
 #       1. Load config (from .env or passed in)
-#       2. Initialize Topic 1: FieldNormalizer, TypeDetector, RecordNormalizer
+#       2. Initialize Topic 1: TypeDetector, RecordNormalizer
 #       3. Initialize Topic 2: FieldAnalyzer, Classifier
 #       4. Initialize Topic 3: MySQLClient, MongoClient, RecordRouter
 #       5. Initialize Topic 4: MetadataStore
@@ -116,7 +115,6 @@ from datetime import datetime
 from typing import Optional
 
 from src.config import AppConfig, get_config
-from src.normalization.field_normalizer import FieldNormalizer
 from src.normalization.type_detector import TypeDetector
 from src.normalization.record_normalizer import RecordNormalizer
 from src.analysis.field_analyzer import FieldAnalyzer
@@ -145,7 +143,7 @@ class IngestAndClassify:
             config: Application configuration. If None, loads from environment.
         
         USES:
-            - Topic 1 (normalization/): FieldNormalizer, TypeDetector, RecordNormalizer
+            - Topic 1 (normalization/): TypeDetector, RecordNormalizer
             - Topic 2 (analysis/): FieldAnalyzer, Classifier, ClassificationThresholds
             - Topic 3 (storage/): MySQLClient, MongoClient, RecordRouter
             - Topic 4 (persistence/): MetadataStore
@@ -154,10 +152,8 @@ class IngestAndClassify:
         self._config = config or get_config()
         
         # TOPIC 1: Normalization
-        self._field_normalizer = FieldNormalizer()
         self._type_detector = TypeDetector()
         self._record_normalizer = RecordNormalizer(
-            self._field_normalizer,
             self._type_detector
         )
         
@@ -167,8 +163,20 @@ class IngestAndClassify:
         self._classifier = Classifier(thresholds)
         
         # TOPIC 3: Storage
-        self._mysql_client = MySQLClient(self._config.mysql)
-        self._mongo_client = MongoClient(self._config.mongo)
+        self._mysql_client = MySQLClient(
+            host=self._config.mysql.host,
+            port=self._config.mysql.port,
+            user=self._config.mysql.user,
+            password=self._config.mysql.password,
+            database=self._config.mysql.database
+        )
+        self._mongo_client = MongoClient(
+            host=self._config.mongo.host,
+            port=self._config.mongo.port,
+            database=self._config.mongo.database,
+            user=self._config.mongo.user,
+            password=self._config.mongo.password
+        )
         self._record_router = RecordRouter(
             self._mysql_client,
             self._mongo_client
@@ -248,7 +256,6 @@ class IngestAndClassify:
             - Topic 2 (analysis/): FieldAnalyzer.analyze_batch(), Classifier.classify_all()
             - Topic 3 (storage/): RecordRouter.route_batch()
             - Topic 4 (persistence/): MetadataStore.save_all()
-            - Topic 1 (normalization/): FieldNormalizer.get_mappings()
         """
         if not self._buffer:
             return {
@@ -272,7 +279,10 @@ class IngestAndClassify:
                 total_records
             )
             
-            # TOPIC 3: Route records to appropriate backends
+            # TOPIC 3: Connect to databases and route records
+            self._mysql_client.connect()
+            self._mongo_client.connect()
+            
             route_result = self._record_router.route_batch(
                 self._buffer,
                 self._decisions,
@@ -285,7 +295,7 @@ class IngestAndClassify:
             self._metadata_store.save_all(
                 decisions=self._decisions,
                 stats=field_stats,
-                mappings=self._field_normalizer.get_mappings(),
+                mappings={},
                 total_records=self._total_records
             )
             
@@ -369,6 +379,8 @@ class IngestAndClassify:
         Returns:
             Dictionary with fields grouped by their backend assignment.
         """
+        from src.analysis.decision import Backend
+        
         summary = {
             "SQL": [],
             "MONGODB": [],
@@ -376,11 +388,18 @@ class IngestAndClassify:
         }
         
         for field_name, decision in self._decisions.items():
-            backend_key = decision.backend.name
+            # Handle both Backend enum and string values
+            if isinstance(decision.backend, Backend):
+                backend_key = decision.backend.name
+            elif isinstance(decision.backend, str):
+                backend_key = decision.backend
+            else:
+                backend_key = str(decision.backend)
+                
             summary[backend_key].append({
                 "field": field_name,
                 "sql_type": decision.sql_type,
-                "nullable": decision.is_nullable,
+                "nullable": getattr(decision, 'is_nullable', True),
                 "reason": decision.reason
             })
         
@@ -422,7 +441,6 @@ class IngestAndClassify:
         USES:
             - Topic 4 (persistence/): MetadataStore.exists(), MetadataStore.load_all()
             - Topic 2 (analysis/): FieldAnalyzer.stats
-            - Topic 1 (normalization/): FieldNormalizer.restore_mappings()
         """
         if not self._metadata_store.exists():
             print("✓ No previous metadata found, starting fresh")
@@ -444,10 +462,6 @@ class IngestAndClassify:
             if state and "total_records" in state:
                 self._total_records = state["total_records"]
             
-            # Restore field normalizer mappings
-            if mappings:
-                self._field_normalizer.restore_mappings(mappings)
-            
             print(f"✓ Restored state: {self._total_records} records processed, "
                   f"{len(self._decisions)} decisions loaded")
             
@@ -460,11 +474,11 @@ class IngestAndClassify:
         Close all connections and clean up resources.
         
         USES:
-            - Topic 3 (storage/): MySQLClient.close(), MongoClient.close()
+            - Topic 3 (storage/): MySQLClient.disconnect(), MongoClient.disconnect()
         """
         try:
-            self._mysql_client.close()
-            self._mongo_client.close()
+            self._mysql_client.disconnect()
+            self._mongo_client.disconnect()
             print("✓ Pipeline connections closed")
         except Exception as e:
             print(f"⚠ Warning during close: {e}")
