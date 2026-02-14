@@ -140,7 +140,173 @@ poetry run python -m src.cli decisions
 
 ---
 
-## 📁 Project Structure
+## � Programmatic Usage
+
+### Using the Pipeline Class Directly
+
+The `IngestAndClassify` class provides the complete pipeline orchestration. For convenience, a `StreamingPipeline` wrapper is also available.
+
+#### Example 1: Basic Batch Processing
+
+```python
+from src.ingest_and_classify import IngestAndClassify
+
+# Initialize pipeline (auto-loads config from .env)
+pipeline = IngestAndClassify()
+
+# Process records
+records = [
+    {"username": "alice", "age": 30, "city": "NYC"},
+    {"username": "bob", "score": 95.5, "metadata": {"level": 5}}
+]
+
+# Ingest batch
+pipeline.ingest_batch(records)
+
+# Check status
+status = pipeline.get_status()
+print(f"Buffer size: {status['buffer_size']}")
+print(f"Total processed: {status['total_records_processed']}")
+
+# Get classification summary
+summary = pipeline.get_classification_summary()
+print(f"SQL fields: {summary['counts']['sql']}")
+print(f"MongoDB fields: {summary['counts']['mongo']}")
+
+# Close connections
+pipeline.close()
+```
+
+#### Example 2: Streaming with Context Manager
+
+```python
+from src.pipeline import StreamingPipeline
+
+# Use context manager for automatic cleanup
+with StreamingPipeline() as pipeline:
+    # Stream 100 records from the data source
+    summary = pipeline.start_streaming(max_records=100)
+    
+    # Results are auto-flushed and connections closed
+    print(f"Rate: {summary['records_per_second']} rec/sec")
+```
+
+#### Example 3: Manual Record-by-Record Processing
+
+```python
+from src.ingest_and_classify import IngestAndClassify
+
+pipeline = IngestAndClassify()
+
+# Process one record at a time
+for i in range(100):
+    record = fetch_from_somewhere()  # Your data source
+    pipeline.ingest(record)
+    
+    # Manual flush when needed
+    if i % 50 == 0:
+        result = pipeline.flush()
+        print(f"Flushed: {result['records_processed']} records")
+
+# Get placement decisions
+decisions = pipeline.get_decisions()
+for field_name, decision in decisions.items():
+    print(f"{field_name} → {decision.backend.name} ({decision.reason})")
+
+pipeline.close()
+```
+
+#### Example 4: Inspect Field Statistics
+
+```python
+from src.ingest_and_classify import IngestAndClassify
+
+pipeline = IngestAndClassify()
+
+# Process some data
+pipeline.ingest_batch(your_records)
+
+# Get detailed field statistics
+field_stats = pipeline.get_field_stats()
+
+for field_name, stats in field_stats.items():
+    print(f"\nField: {field_name}")
+    print(f"  Presence: {stats.presence_count} records")
+    print(f"  Dominant type: {stats.dominant_type}")
+    print(f"  Type stability: {stats.type_stability:.2%}")
+    print(f"  Unique ratio: {stats.unique_ratio:.2%}")
+    print(f"  Is nested: {stats.is_nested}")
+
+pipeline.close()
+```
+
+#### Example 5: Using the Streaming Wrapper
+
+```python
+from src.pipeline import StreamingPipeline
+
+# Create pipeline
+pipeline = StreamingPipeline()
+
+# Option 1: Stream from configured data source
+pipeline.start_streaming(max_records=50, interval_seconds=0.1)
+
+# Option 2: Process your own batch
+my_records = [...]
+result = pipeline.process_batch(my_records)
+
+# Option 3: Process single records
+pipeline.process_single({"username": "test", "value": 123})
+
+# Check current status
+status = pipeline.get_pipeline_status()
+print(f"Will auto-flush: {status['will_auto_flush']}")
+
+# Get field placement decisions
+decisions = pipeline.get_field_decisions()
+
+# Cleanup
+pipeline.close()
+```
+
+#### Configuration Options
+
+The pipeline uses configuration from `.env` or can be passed directly:
+
+```python
+from src.config import AppConfig, MySQLConfig, MongoConfig, BufferConfig
+from src.ingest_and_classify import IngestAndClassify
+
+# Custom configuration
+config = AppConfig(
+    mysql=MySQLConfig(host="localhost", port=3306, database="my_db"),
+    mongo=MongoConfig(host="localhost", port=27017, database="my_db"),
+    buffer=BufferConfig(buffer_size=100, buffer_timeout_seconds=10.0),
+    data_stream_url="http://localhost:8000/GET/record",
+    metadata_dir="./my_metadata/"
+)
+
+pipeline = IngestAndClassify(config)
+```
+
+#### CLI Wrapper
+
+For quick testing, use the pipeline module directly:
+
+```bash
+# Run demo with sample data
+poetry run python -m src.pipeline demo
+
+# Stream from data source
+poetry run python -m src.pipeline stream
+
+# Stream specific number of records
+poetry run python -m src.pipeline stream 100
+```
+
+---
+
+## �📁 Project Structure
 
 ```
 .
