@@ -137,27 +137,49 @@ class MySQLClient:
             self.connection.commit()
             cursor.close()
         
-    def insert_batch(self, table_name: str, records: list[dict]) -> int:
-        # Insert multiple records, return count inserted
+    def insert_batch(self, table_name: str, records: list[dict], primary_key_field: str = None) -> int:
+        # Insert or update multiple records (upsert), return count processed
+        # primary_key_field: THE primary key field name for duplicate detection
+        # Upsert matches only on PRIMARY KEY, not all unique fields
         if self.connection is not None and records:
             cursor = self.connection.cursor()
-            inserted_count = 0
+            upserted_count = 0
+            
             for record in records:
                 try:
-                    columns = record.keys()
+                    columns = list(record.keys())
                     placeholders = ", ".join(['%s'] * len(columns))
                     column_names = ", ".join(columns)
-                    query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
-                    values = record.values()
-                    cursor.execute(query, tuple(values))
+                    
+                    # Build ON DUPLICATE KEY UPDATE clause
+                    # Update all columns EXCEPT the primary key itself
+                    update_parts = []
+                    for col in columns:
+                        if col != primary_key_field:  # Don't update the primary key
+                            update_parts.append(f"{col} = VALUES({col})")
+                    
+                    if primary_key_field and update_parts:  
+                        # Primary key exists - do upsert
+                        update_clause = ", ".join(update_parts)
+                        query = (
+                            f"INSERT INTO {table_name} ({column_names}) "
+                            f"VALUES ({placeholders}) "
+                            f"ON DUPLICATE KEY UPDATE {update_clause}"
+                        )
+                    else:
+                        # No primary key or nothing to update - just insert
+                        query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
+                    
+                    values = tuple(record.values())
+                    cursor.execute(query, values)
                     self.connection.commit()
-                    inserted_count += 1
+                    upserted_count += 1
                 except Exception as e:
                     # Log error but continue with other records
-                    print(f"✗ MySQL insert failed: {str(e)[:100]}")
+                    print(f"✗ MySQL upsert failed: {str(e)[:100]}")
                     self.connection.rollback()
             cursor.close()
-            return inserted_count
+            return upserted_count
         else:
             return 0
 
@@ -257,12 +279,28 @@ class MySQLClient:
         self.connection.commit()
         
         # Step 4: Update all records with converted values
+        # Use first available key field (prefer unique fields, fallback to any available)
+        key_fields = []
+        if converted_records:
+            # Look for potential key fields (unique identifiers)
+            first_record = converted_records[0]
+            potential_keys = ['username', 'sys_ingested_at', 'id', 'uuid']
+            for key in potential_keys:
+                if key in first_record:
+                    key_fields.append(key)
+            # If no standard keys found, use all fields for WHERE clause
+            if not key_fields:
+                key_fields = list(first_record.keys())
+        
         for record in converted_records:
-            # Build UPDATE query
-            set_clause = ", ".join([f"{col} = %s" for col in record.keys()])
-            update_query = f"UPDATE {table_name} SET {set_clause} WHERE username = %s AND sys_ingested_at = %s"
-            values = list(record.values()) + [record['username'], record['sys_ingested_at']]
-            cursor.execute(update_query, tuple(values))
+            # Build UPDATE query with dynamic WHERE clause
+            non_key_fields = [col for col in record.keys() if col not in key_fields]
+            if non_key_fields:
+                set_clause = ", ".join([f"{col} = %s" for col in non_key_fields])
+                where_clause = " AND ".join([f"{key} = %s" for key in key_fields])
+                update_query = f"UPDATE {table_name} SET {set_clause} WHERE {where_clause}"
+                values = [record[col] for col in non_key_fields] + [record[key] for key in key_fields]
+                cursor.execute(update_query, tuple(values))
         
         self.connection.commit()
         cursor.close()
