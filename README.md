@@ -337,7 +337,7 @@ AppConfig
 ### Data Streaming
 | | |
 |:---:|:---:|
-| ![Streaming Start](Screenshots/streaming_1.png) | ![Streaming Continued](Screenshots/streaming2.png) |
+| ![Streaming Start](Screenshots/stream_1.png) | ![Streaming Continued](Screenshots/streaming2.png) |
 | *Initial ingestion phase* | *Continued real-time processing* |
 
 ### MySQL Storage
