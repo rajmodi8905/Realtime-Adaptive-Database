@@ -332,6 +332,34 @@ AppConfig
 
 ---
 
+## Screenshots
+
+### Data Streaming
+| | |
+|:---:|:---:|
+| ![Streaming Start](Screenshots/streaming_1.png) | ![Streaming Continued](Screenshots/streaming2.png) |
+| *Initial ingestion phase* | *Continued real-time processing* |
+
+### MySQL Storage
+| | | |
+|:---:|:---:|:---:|
+| ![MySQL Records](Screenshots/sql_records.png) | ![MySQL Schema](Screenshots/sql_fields.png) | ![MySQL Count](Screenshots/sql_count.png) |
+| *Stored records* | *Dynamically created schema* | *Record count* |
+
+### MongoDB Storage
+| | | |
+|:---:|:---:|:---:|
+| ![MongoDB Docs](Screenshots/mongo_records.png) | ![MongoDB Fields](Screenshots/mongodb_fields.png) | ![MongoDB Count](Screenshots/mongodb_count.png) |
+| *Stored documents* | *Document structure* | *Document count* |
+
+### Metadata Persistence
+| | | |
+|:---:|:---:|:---:|
+| ![Decisions](Screenshots/decision_metadata.png) | ![Field Stats](Screenshots/field_stats_metadata.png) | ![WAL](Screenshots/pending.png) |
+| *decisions.json* | *field_stats.json* | *pending.jsonl (WAL)* |
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -477,7 +505,7 @@ MONGO_HOST=localhost
 MONGO_PORT=27017
 MONGO_DATABASE=adaptive_db
 
-BUFFER_SIZE=100
+BUFFER_SIZE=50
 BUFFER_TIMEOUT=30.0
 
 DATA_STREAM_URL=http://localhost:8000/GET/record
