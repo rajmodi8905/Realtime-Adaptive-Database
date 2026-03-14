@@ -1,0 +1,66 @@
+{
+  "schema_name": "social_iot_hybrid_v1",
+  "version": "1.0.0",
+  "root_entity": "event",
+  "json_schema": {
+    "type": "object",
+    "required": ["username", "event_id", "timestamp", "post"],
+    "properties": {
+      "username": { "type": "string" },
+      "event_id": { "type": "string" },
+      "timestamp": { "type": "string", "format": "date-time" },
+      "device": {
+        "type": "object",
+        "properties": {
+          "device_id": { "type": "string" },
+          "model": { "type": "string" },
+          "firmware": { "type": "string" }
+        }
+      },
+      "post": {
+        "type": "object",
+        "required": ["post_id", "title"],
+        "properties": {
+          "post_id": { "type": "string" },
+          "title": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["comment_id", "text", "commenter"],
+              "properties": {
+                "comment_id": { "type": "string" },
+                "text": { "type": "string" },
+                "commenter": { "type": "string" },
+                "reactions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "reaction_type": { "type": "string" },
+                      "count": { "type": "integer" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "metrics": {
+        "type": "object",
+        "properties": {
+          "latency_ms": { "type": "number" },
+          "battery_pct": { "type": "integer" },
+          "signal_quality": { "type": "string" }
+        }
+      }
+    }
+  },
+  "constraints": {
+    "unique_candidates": ["event_id", "post.post_id", "post.comments.comment_id"],
+    "not_null": ["username", "event_id", "timestamp"],
+    "index_candidates": ["username", "timestamp", "post.post_id"]
+  }
+}
