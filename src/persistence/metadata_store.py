@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Dict, Tuple, Any
 from datetime import datetime
 
+from src.analysis.decision import PlacementDecision, Backend
+from src.analysis.field_stats import FieldStats
+
 
 # ==============================================
 # MetadataStore
@@ -26,68 +29,6 @@ from datetime import datetime
 #   3. Field name mappings  → Original name → canonical name map
 #   4. Total records count  → How many records were observed
 #
-class PlacementDecision:
-    """Represents a decision about where to store a field"""
-    def __init__(self, backend: str, sql_type: str = None, reasoning: str = ""):
-        self.backend = backend  # "SQL" or "NoSQL"
-        self.sql_type = sql_type  # e.g., "VARCHAR(50)", "INTEGER"
-        self.reasoning = reasoning
-    
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization"""
-        return {
-            "backend": self.backend,
-            "sql_type": self.sql_type,
-            "reasoning": self.reasoning
-        }
-    
-    @staticmethod
-    def from_dict(data: dict) -> 'PlacementDecision':
-        """Create from dictionary (deserialization)"""
-        return PlacementDecision(
-            backend=data.get("backend"),
-            sql_type=data.get("sql_type"),
-            reasoning=data.get("reasoning", "")
-        )
-
-
-class FieldStats:
-    """Statistics about a field collected during analysis"""
-    def __init__(self):
-        self.presence_count = 0  # How many records have this field
-        self.total_records = 0   # Total records seen
-        self.type_counts = {}    # {"string": 100, "integer": 50, "null": 10}
-        self.min_length = float('inf')
-        self.max_length = 0
-        self.avg_length = 0.0
-        self.sample_values = []  # Keep a few examples
-    
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization"""
-        return {
-            "presence_count": self.presence_count,
-            "total_records": self.total_records,
-            "type_counts": self.type_counts,
-            "min_length": self.min_length if self.min_length != float('inf') else 0,
-            "max_length": self.max_length,
-            "avg_length": self.avg_length,
-            "sample_values": self.sample_values[:10]  # Only save first 10
-        }
-    
-    @staticmethod
-    def from_dict(data: dict) -> 'FieldStats':
-        """Create from dictionary (deserialization)"""
-        stats = FieldStats()
-        stats.presence_count = data.get("presence_count", 0)
-        stats.total_records = data.get("total_records", 0)
-        stats.type_counts = data.get("type_counts", {})
-        stats.min_length = data.get("min_length", 0)
-        stats.max_length = data.get("max_length", 0)
-        stats.avg_length = data.get("avg_length", 0.0)
-        stats.sample_values = data.get("sample_values", [])
-        return stats
-    
-
 # CLASS: MetadataStore
 # --------------------
 #   Stateful — holds a reference to the storage directory.
