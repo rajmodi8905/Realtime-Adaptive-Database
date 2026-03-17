@@ -218,12 +218,12 @@ class FieldStats:
         Returns:
             A FieldStats instance reconstructed from the data
         """
-        fs = cls(name=data["name"])  # Create instance with the field name
+        fs = cls(name=data["name"])
         fs.nesting_depth = data.get("nesting_depth", 0)
         fs.presence_count = data.get("presence_count", 0)
         fs.type_counts = data.get("type_counts", {})
         fs.null_count = data.get("null_count", 0)
-        fs.unique_count = data.get("unique_count", 0)  # Restore unique count
+        fs.unique_count = data.get("unique_count", 0)
         fs.is_nested = data.get("is_nested", False)
         fs.sample_values = data.get("sample_values", [])
         return fs
