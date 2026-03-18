@@ -95,24 +95,25 @@ class RecordRouter:
         # Extract PRIMARY KEY field (not all unique fields) - used for upsert matching
         # Only the field marked as primary key should be used for duplicate detection
         primary_key_field = None
+        primary_key_decision = None
         for field, decision in decisions.items():
             if decision.is_primary_key and decision.backend in (Backend.SQL, Backend.BOTH):
-                primary_key_field = field
+                primary_key_field = decision.sql_column_name or field
+                primary_key_decision = decision
                 break
         
         # For MongoDB, use the primary key if it goes to MongoDB, otherwise use first unique field
         # EXCLUDE timestamp fields from being used as upsert keys
         mongo_key_field = None
-        if primary_key_field:
+        if primary_key_field and primary_key_decision:
             # Check if primary key goes to MongoDB
-            pk_decision = decisions.get(primary_key_field)
-            if pk_decision and pk_decision.backend in (Backend.MONGODB, Backend.BOTH):
+            if primary_key_decision.backend in (Backend.MONGODB, Backend.BOTH):
                 # Make sure it's not a timestamp field
-                field_lower = primary_key_field.lower()
+                field_lower = primary_key_decision.field_name.lower()
                 is_timestamp = any(x in field_lower for x in 
                                  ['timestamp', '_at', 'created', 'updated', 'ingested', 'time', 'date'])
                 if not is_timestamp:
-                    mongo_key_field = primary_key_field
+                    mongo_key_field = primary_key_decision.field_name
         
         # Fallback to first non-timestamp unique field in MongoDB if no primary key there
         if not mongo_key_field:
@@ -169,14 +170,16 @@ class RecordRouter:
                 # Unknown field, default to MongoDB
                 mongo_dict[field] = value
             elif decision.backend == Backend.SQL:
-                sql_dict[field] = value
+                sql_field = decision.sql_column_name or field
+                sql_dict[sql_field] = value
                 # CRITICAL: If this is a linking field, also add to MongoDB
                 if field in linking_fields:
                     mongo_dict[field] = value
             elif decision.backend == Backend.MONGODB:
                 mongo_dict[field] = value
             elif decision.backend == Backend.BOTH:
-                sql_dict[field] = value
+                sql_field = decision.sql_column_name or field
+                sql_dict[sql_field] = value
                 mongo_dict[field] = value
             else:
                 raise ValueError(f"Invalid placement decision for field '{field}': {decision}")

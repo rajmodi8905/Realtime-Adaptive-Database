@@ -522,7 +522,7 @@ class IngestAndClassify:
         """
         try:
             with open(self._wal_path, "a") as f:
-                f.write(json.dumps(record) + "\n")
+                f.write(json.dumps(record, default=str) + "\n")
         except Exception as e:
             # Log but don't fail - WAL is a safety net, not critical path
             print(f"⚠ WAL write warning: {e}")

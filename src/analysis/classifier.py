@@ -283,8 +283,8 @@ class Classifier:
         unique_ratio = stats.unique_ratio
         dominant_type = stats.dominant_type
 
-        # Helper to get SQL column name from field name (flatten dots to underscores)
-        sql_column_name = field_name.replace(".", "_")
+        # Keep SQL column names aligned with canonical dot-notation field names.
+        sql_column_name = field_name
 
         # RULE 2: ARRAY FIELDS → MONGODB
         # Arrays must stay in MongoDB because SQL doesn't handle arrays natively

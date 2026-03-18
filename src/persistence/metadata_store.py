@@ -112,7 +112,7 @@ class MetadataStore:
         }
         
         with open(self.stats_file, 'w') as f:
-            json.dump(stats_dict, f, indent=2)
+            json.dump(stats_dict, f, indent=2, default=str)
         
         print(f"Saved stats for {len(stats)} fields to {self.stats_file}")
     

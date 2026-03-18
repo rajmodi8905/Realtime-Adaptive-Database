@@ -33,7 +33,7 @@ class RecordNormalizer:
     def _normalize_and_flatten(self, key: str, value: Any, flattened: dict, coercion_metadata: dict) -> None:
         if isinstance(value, dict):
             for nested_key, nested_value in value.items():
-                compound_key = f"{key}_{nested_key}"
+                compound_key = f"{key}.{nested_key}"
                 self._normalize_and_flatten(compound_key, nested_value, flattened, coercion_metadata)
         elif isinstance(value, list):
             normalized_list = []
