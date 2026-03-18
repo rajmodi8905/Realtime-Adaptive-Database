@@ -590,6 +590,14 @@ class IngestAndClassify:
             # Restore total records count
             if state and "total_records" in state:
                 self._total_records = state["total_records"]
+                self._field_analyzer.total_records = state["total_records"]
+            elif stats:
+                # Fallback for older state files: infer from restored field stats
+                # so presence_ratio remains consistent after restart.
+                self._field_analyzer.total_records = max(
+                    fs.presence_count for fs in stats.values()
+                )
+                self._total_records = self._field_analyzer.total_records
             
             print(f"✓ Restored state: {self._total_records} records processed, "
                   f"{len(self._decisions)} decisions loaded")

@@ -1,7 +1,7 @@
 from typing import Optional
 
 from src.ingest_and_classify import IngestAndClassify
-from src.config import AppConfig
+from src.config import AppConfig, get_config
 
 from .contracts import ClassifiedField, CrudOperation, QueryPlan, SchemaRegistration
 from .crud_engine import CrudEngine
@@ -36,12 +36,15 @@ class Assignment2Pipeline:
             a1_pipeline: Optional pre-created IngestAndClassify instance.
                          If not provided, one is created internally.
         """
+        # Store config for later use by CRUD engine, query planner, etc.
+        self.config = config or get_config()
+        
         # A1 pipeline — handles ingestion, analysis, classification
-        self.a1_pipeline = a1_pipeline or IngestAndClassify(config)
+        self.a1_pipeline = a1_pipeline or IngestAndClassify(self.config)
 
         # A2 components — handle normalization, decomposition, CRUD
         self.schema_registry = SchemaRegistry()
-        self.metadata_catalog = MetadataCatalog()
+        self.metadata_catalog = MetadataCatalog(self.config.metadata_dir)
         self.sql_engine = SqlNormalizationEngine()
         self.mongo_engine = MongoDecompositionEngine()
         self.strategy_generator = StorageStrategyGenerator()
