@@ -104,6 +104,7 @@ class MongoDecompositionEngine:
         self,
         registration: SchemaRegistration,
         classified_fields: list[ClassifiedField],
+        sql_root_pk: str | None = None,
     ) -> list[CollectionPlan]:
         """Generate collection decomposition decisions for MongoDB.
 
@@ -113,12 +114,15 @@ class MongoDecompositionEngine:
         Args:
             registration:       Schema registration metadata (name, root entity).
             classified_fields:  Bridge output from A1's PlacementDecision list.
+            sql_root_pk:        Primary key of the root entity in the SQL schema.
 
         Returns:
             A list containing one ``CollectionPlan`` for the root collection.
             Referenced sub-paths each get their own entry in
             ``CollectionPlan.reference_collections``.
         """
+
+        plans = []
         root_collection = self._derive_collection_name(registration.root_entity)
         logger.info(
             "MongoDecompositionEngine: evaluating %d fields for collection '%s'",
@@ -145,14 +149,37 @@ class MongoDecompositionEngine:
                 ref_col = self._derive_reference_collection_name(root_collection, cf.field_path)
                 plan.reference_collections[cf.field_path] = ref_col
                 logger.debug("[REFERENCE] %s → %s — %s", cf.field_path, ref_col, verdict.heuristic_applied)
+            plans.append(plan)
+            if sql_root_pk:
+                if sql_root_pk not in plan.embedded_paths:
+                    plan.embedded_paths.append(sql_root_pk)
+                    logger.debug(
+                        "Ensuring SQL root PK '%s' is embedded in MongoDB for joinability.",
+                        sql_root_pk,
+                    )
+
+        # Reference collection plans
+        for ref_path, ref_col_name in plan.reference_collections.items():
+            if sql_root_pk:
+                embedded_paths = [sql_root_pk] + [ref_path]
+            else:
+                embedded_paths = [ref_path]
+            ref_plan = CollectionPlan(
+                collection_name=ref_col_name,
+                embedded_paths=embedded_paths,  # or all sub-fields
+                referenced_paths=[],
+                reference_collections={},
+            )
+            plans.append(ref_plan)
 
         self._log_summary(root_collection, verdicts)
-        return [plan]
+        return plans
 
     def execute_collection_plans(
         self,
         collections: list[CollectionPlan],
         mongo_client,
+        sql_root_pk: str | None = None,
     ) -> dict[str, Any]:
         """Create MongoDB collections and indexes from CollectionPlans.
 
@@ -201,7 +228,7 @@ class MongoDecompositionEngine:
                     errors.append({"collection": ref_col_name, "error": msg})
 
                 # Also index the parent reference key on the root collection
-                parent_ref_key = f"{ref_path}._ref_id"
+                parent_ref_key = sql_root_pk if sql_root_pk else "_ref_id"
                 try:
                     db[plan.collection_name].create_index([(parent_ref_key, 1)], background=True)
                     indexes_created += 1
