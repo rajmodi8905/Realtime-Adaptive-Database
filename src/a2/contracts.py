@@ -70,7 +70,6 @@ class FieldLocation:
     column_or_path: str
     join_keys: list[str] = field(default_factory=list)
 
-
 @dataclass
 class QueryPlan:
     """Executable multi-backend query plan produced from user JSON request."""
@@ -133,4 +132,6 @@ class ClassifiedField:
             is_unique=decision.is_unique,
             parent_path=parent,
         )
+    
+    
 

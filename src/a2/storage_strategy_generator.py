@@ -21,12 +21,16 @@ class StorageStrategyGenerator:
 
         # Process SQL tables and relationships
         for table in sql_tables:
+            foreign_keys = [fk['column'] for fk in table.foreign_keys]
             for column in table.columns:
+                is_foreign_key = column in foreign_keys
+                join_keys = [table.primary_key] if not is_foreign_key else []
                 field_locations.append(FieldLocation(
                     field_path=column,
                     backend="sql",
                     table_or_collection=table.table_name,
-                    column_or_path=column
+                    column_or_path=column,
+                    join_keys=join_keys + [fk['column'] for fk in table.foreign_keys],
                 ))
 
         # Process Mongo collections and embedding/reference plans
@@ -84,8 +88,14 @@ class StorageStrategyGenerator:
                     join_keys=list(location.join_keys),
                 )
                 continue
-
-            merged_join_keys = list(dict.fromkeys(existing.join_keys + location.join_keys))
+            
+            if location.field_path in location.join_keys:
+                # Avoid self-referential join keys which don't make sense to merge
+                merged_join_keys = location.join_keys
+            elif location.field_path in existing.join_keys:
+                merged_join_keys = existing.join_keys
+            else:
+                merged_join_keys = list(dict.fromkeys(existing.join_keys + location.join_keys))
 
             preferred = self._prefer_location(existing, location)
             backend = preferred.backend

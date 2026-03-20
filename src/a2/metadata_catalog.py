@@ -97,8 +97,9 @@ class MetadataCatalog:
             data = json.load(f)
         
         # Convert dictionaries back to FieldLocation objects
-        locations = [
-            FieldLocation(**mapping) 
-            for mapping in data.get("field_locations", [])
-        ]
+        locations = []
+        for mapping in data.get("field_locations", []):
+            # Filter out fields not in FieldLocation dataclass
+            mapping_copy = {k: v for k, v in mapping.items() if k in {'field_path', 'backend', 'table_or_collection', 'column_or_path', 'join_keys'}}
+            locations.append(FieldLocation(**mapping_copy))
         return locations
