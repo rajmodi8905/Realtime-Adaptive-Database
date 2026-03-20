@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from .contracts import CrudOperation, FieldLocation, QueryPlan
@@ -136,9 +137,23 @@ class QueryPlanner:
                     row = table_row_buffer.setdefault(loc.table_or_collection, {})
                     row[loc.column_or_path] = value
 
-                if backend == "mongo":
+                if backend in ("mongo", "both"):
                     doc = collection_doc_buffer.setdefault(loc.table_or_collection, {})
                     self._set_dotted_path(doc, loc.column_or_path, value)
+
+            # Ensure required ingest timestamp exists when metadata expects it.
+            if "sys_ingested_at" not in record:
+                now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                for loc in field_locations:
+                    if loc.field_path != "sys_ingested_at":
+                        continue
+                    backend = loc.backend.lower()
+                    if backend in ("sql", "both"):
+                        row = table_row_buffer.setdefault(loc.table_or_collection, {})
+                        row.setdefault(loc.column_or_path, now_utc)
+                    if backend in ("mongo", "both"):
+                        doc = collection_doc_buffer.setdefault(loc.table_or_collection, {})
+                        self._set_dotted_path(doc, loc.column_or_path, now_utc)
 
             for table, row in table_row_buffer.items():
                 if row:

@@ -340,7 +340,79 @@ class CrudEngine:
            across both backends.
         4. Return insert counts per backend.
         """
-        raise NotImplementedError("Implement insert execution across backends")
+        errors: list[str] = []
+        sql_inserted = 0
+        mongo_inserted = 0
+
+        for idx, query in enumerate(plan.sql_queries or []):
+            if query.get("type") not in (None, "insert_batch"):
+                errors.append(
+                    f"SQL query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
+                )
+                continue
+            if mysql_client is None:
+                errors.append("SQL insert execution failed: mysql_client is not provided")
+                break
+
+            table = query.get("table")
+            rows = query.get("rows") or []
+            if not table:
+                errors.append(f"SQL query #{idx + 1} missing table name")
+                continue
+            if not isinstance(rows, list):
+                errors.append(f"SQL query #{idx + 1} has invalid rows payload")
+                continue
+
+            try:
+                if rows:
+                    inserted = int(mysql_client.insert_batch(table, rows))
+                    sql_inserted += inserted
+                    if inserted == 0:
+                        errors.append(
+                            f"SQL query #{idx + 1} inserted 0 rows into '{table}'."
+                        )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"SQL query #{idx + 1} execution failed: {exc}")
+
+        for idx, query in enumerate(plan.mongo_queries or []):
+            if query.get("type") not in (None, "insert_batch"):
+                errors.append(
+                    f"Mongo query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
+                )
+                continue
+            if mongo_client is None:
+                errors.append("Mongo insert execution failed: mongo_client is not provided")
+                break
+
+            collection = query.get("collection")
+            documents = query.get("documents") or []
+            if not collection:
+                errors.append(f"Mongo query #{idx + 1} missing collection name")
+                continue
+            if not isinstance(documents, list):
+                errors.append(f"Mongo query #{idx + 1} has invalid documents payload")
+                continue
+
+            try:
+                if documents:
+                    inserted = int(mongo_client.insert_batch(collection, documents))
+                    mongo_inserted += inserted
+                    if inserted == 0:
+                        errors.append(
+                            f"Mongo query #{idx + 1} inserted 0 documents into '{collection}'."
+                        )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Mongo query #{idx + 1} execution failed: {exc}")
+
+        status = "partial_success" if errors and (sql_inserted or mongo_inserted) else ("error" if errors else "success")
+        return {
+            "status": status,
+            "operation": "create",
+            "message": "Create executed with warnings." if errors else "Create executed successfully.",
+            "sql_inserted": sql_inserted,
+            "mongo_inserted": mongo_inserted,
+            "errors": errors,
+        }
 
     def _execute_update(self, plan: QueryPlan, mysql_client, mongo_client) -> dict:
         """Update: modify existing records while ensuring schema consistency.

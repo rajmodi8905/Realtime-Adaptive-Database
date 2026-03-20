@@ -149,26 +149,32 @@ class MySQLClient:
                 try:
                     columns = list(record.keys())
                     placeholders = ", ".join(['%s'] * len(columns))
-                    column_names = ", ".join(columns)
+                    quoted_columns = [f"`{col}`" for col in columns]
+                    column_names = ", ".join(quoted_columns)
                     
                     # Build ON DUPLICATE KEY UPDATE clause
                     # Update all columns EXCEPT the primary key itself
                     update_parts = []
                     for col in columns:
                         if col != primary_key_field:  # Don't update the primary key
-                            update_parts.append(f"{col} = VALUES({col})")
+                            update_parts.append(
+                                f"`{col}` = VALUES(`{col}`)"
+                            )
                     
                     if primary_key_field and update_parts:  
                         # Primary key exists - do upsert
                         update_clause = ", ".join(update_parts)
                         query = (
-                            f"INSERT INTO {table_name} ({column_names}) "
+                            f"INSERT INTO `{table_name}` ({column_names}) "
                             f"VALUES ({placeholders}) "
                             f"ON DUPLICATE KEY UPDATE {update_clause}"
                         )
                     else:
                         # No primary key or nothing to update - just insert
-                        query = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
+                        query = (
+                            f"INSERT INTO `{table_name}` ({column_names}) "
+                            f"VALUES ({placeholders})"
+                        )
                     
                     values = tuple(record.values())
                     cursor.execute(query, values)

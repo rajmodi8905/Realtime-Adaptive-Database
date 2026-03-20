@@ -149,7 +149,6 @@ class MongoDecompositionEngine:
                 ref_col = self._derive_reference_collection_name(root_collection, cf.field_path)
                 plan.reference_collections[cf.field_path] = ref_col
                 logger.debug("[REFERENCE] %s → %s — %s", cf.field_path, ref_col, verdict.heuristic_applied)
-            plans.append(plan)
             if sql_root_pk:
                 if sql_root_pk not in plan.embedded_paths:
                     plan.embedded_paths.append(sql_root_pk)
@@ -157,6 +156,8 @@ class MongoDecompositionEngine:
                         "Ensuring SQL root PK '%s' is embedded in MongoDB for joinability.",
                         sql_root_pk,
                     )
+
+        plans.append(plan)
 
         # Reference collection plans
         for ref_path, ref_col_name in plan.reference_collections.items():
