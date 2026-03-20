@@ -34,11 +34,17 @@ class QueryPlanner:
         raise ValueError(f"Unsupported operation: {operation}")
 
     def _build_read_plan(self, payload: dict, field_locations: list[FieldLocation],field_index: dict[str, FieldLocation]) -> QueryPlan:
-        requested_fields = list(payload.get("fields") or payload.get("requested_fields") or [])
+        requested_fields = self._resolve_requested_fields(
+            list(payload.get("fields") or payload.get("requested_fields") or []),
+            field_index,
+        )
         if not requested_fields:
             requested_fields = sorted(field_index.keys())
 
-        filters = payload.get("filters") or payload.get("where") or {}
+        filters = self._resolve_filters(
+            payload.get("filters") or payload.get("where") or {},
+            field_index,
+        )
         limit = payload.get("limit")
         offset = payload.get("offset")
         sort = payload.get("sort")
@@ -162,8 +168,14 @@ class QueryPlanner:
         )
 
     def _build_update_plan(self, payload: dict, field_locations: list[FieldLocation], field_index: dict[str, FieldLocation]) -> QueryPlan:
-        updates = payload.get("updates") or payload.get("set") or {}
-        filters = payload.get("filters") or payload.get("where") or {}
+        updates = self._resolve_filters(
+            payload.get("updates") or payload.get("set") or {},
+            field_index,
+        )
+        filters = self._resolve_filters(
+            payload.get("filters") or payload.get("where") or {},
+            field_index,
+        )
 
         sql_set: dict[str, dict[str, Any]] = {}
         mongo_set: dict[str, dict[str, Any]] = {}
@@ -210,8 +222,14 @@ class QueryPlanner:
         )
 
     def _build_delete_plan(self, payload: dict, field_locations: list[FieldLocation], field_index: dict[str, FieldLocation]) -> QueryPlan:
-        filters = payload.get("filters") or payload.get("where") or {}
-        target_fields = list(payload.get("fields") or [])
+        filters = self._resolve_filters(
+            payload.get("filters") or payload.get("where") or {},
+            field_index,
+        )
+        target_fields = self._resolve_requested_fields(
+            list(payload.get("fields") or []),
+            field_index,
+        )
         if not target_fields:
             target_fields = list(filters.keys())
 
@@ -297,6 +315,55 @@ class QueryPlanner:
             join_keys = [k for k in fallbacks if k in known_fields]
 
         return join_keys
+
+    @staticmethod
+    def _resolve_requested_fields(
+        requested_fields: list[str],
+        field_index: dict[str, FieldLocation],
+    ) -> list[str]:
+        resolved: list[str] = []
+        for field in requested_fields:
+            canonical = QueryPlanner._resolve_field_alias(field, field_index)
+            if canonical and canonical not in resolved:
+                resolved.append(canonical)
+        return resolved
+
+    @staticmethod
+    def _resolve_filters(
+        filters: dict[str, Any],
+        field_index: dict[str, FieldLocation],
+    ) -> dict[str, Any]:
+        resolved: dict[str, Any] = {}
+        for field, value in (filters or {}).items():
+            canonical = QueryPlanner._resolve_field_alias(field, field_index)
+            if canonical:
+                resolved[canonical] = value
+        return resolved
+
+    @staticmethod
+    def _resolve_field_alias(
+        field: str,
+        field_index: dict[str, FieldLocation],
+    ) -> str | None:
+        if field in field_index:
+            return field
+
+        candidates = [
+            path
+            for path in field_index.keys()
+            if path == field or path.endswith(f".{field}")
+        ]
+
+        if not candidates:
+            return None
+
+        # Ambiguous suffixes are resolved by preferring the shallowest path.
+        # If still tied, use lexical order for determinism.
+        candidates.sort(key=lambda p: (p.count("."), p))
+        best = candidates[0]
+        if len(candidates) > 1 and candidates[0].count(".") == candidates[1].count("."):
+            return None
+        return best
 
     @staticmethod
     def _extract_value(record: dict[str, Any], field_path: str) -> Any:

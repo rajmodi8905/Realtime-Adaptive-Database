@@ -173,7 +173,7 @@ class MongoDecompositionEngine:
         Returns:
             ``{"collections_created": int, "indexes_created": int, "errors": list}``
         """
-        db = mongo_client.get_default_database()
+        db = self._resolve_database(mongo_client)
         existing_collections: set[str] = set(db.list_collection_names())
 
         collections_created = 0
@@ -218,6 +218,22 @@ class MongoDecompositionEngine:
         }
         logger.info("execute_collection_plans complete: %s", result)
         return result
+
+    @staticmethod
+    def _resolve_database(mongo_client):
+        """Resolve a pymongo database handle from different client shapes."""
+        if hasattr(mongo_client, "get_default_database"):
+            return mongo_client.get_default_database()
+
+        client = getattr(mongo_client, "client", None)
+        database = getattr(mongo_client, "database", None)
+        if client is not None and database:
+            return client[database]
+
+        raise ValueError(
+            "Mongo client is missing a usable database handle. "
+            "Expected get_default_database() or client+database attributes."
+        )
 
     # ------------------------------------------------------------------
     # Heuristic engine (private)
