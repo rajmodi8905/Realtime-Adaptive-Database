@@ -53,7 +53,7 @@ class StorageStrategyGenerator:
                 field_locations.append(FieldLocation(
                     field_path=ref_path,
                     backend="mongo",
-                    table_or_collection=collection.collection_name,
+                    table_or_collection=collection.reference_collections[ref_path],
                     column_or_path=ref_path,
                     join_keys=join_keys,
                 ))
