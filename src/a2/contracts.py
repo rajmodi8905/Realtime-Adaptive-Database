@@ -22,8 +22,8 @@ class SchemaRegistration:
 
     schema_name: str
     version: str
-    root_entity: str
     json_schema: dict[str, Any]
+    root_entity: str = "root"
     constraints: dict[str, Any] = field(default_factory=dict)
 
 
