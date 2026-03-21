@@ -372,6 +372,7 @@ class QueryPlanner:
             payload.get("filters") or payload.get("where") or {},
             field_index,
         )
+        join_keys = self._infer_join_keys(field_locations)
 
         sql_set: dict[str, dict[str, Any]] = {}
         mongo_set: dict[str, dict[str, Any]] = {}
@@ -382,28 +383,56 @@ class QueryPlanner:
             backend = loc.backend.lower()
             if backend in ("sql", "both"):
                 sql_set.setdefault(loc.table_or_collection, {})[loc.column_or_path] = value
-            if backend == "mongo":
+            if backend in ("mongo", "both"):
                 mongo_set.setdefault(loc.table_or_collection, {})[loc.column_or_path] = value
 
         sql_where, mongo_filter = self._split_filters(filters, field_index)
 
-        sql_queries = [
-            {
-                "type": "update",
-                "table": table,
-                "set": set_values,
-                "where": sql_where.get(table, {}),
-            }
-            for table, set_values in sorted(sql_set.items())
-            if set_values
-        ]
+        cross_backend_filter = {
+            field: value
+            for field, value in filters.items()
+            if field in join_keys
+        }
+
+        sql_filterable_columns: dict[str, set[str]] = {}
+        for loc in field_locations:
+            if loc.backend.lower() not in ("sql", "both"):
+                continue
+            cols = sql_filterable_columns.setdefault(loc.table_or_collection, set())
+            cols.add(loc.column_or_path)
+            for key in loc.join_keys:
+                if key:
+                    cols.add(key)
+
+        sql_queries: list[dict[str, Any]] = []
+        for table, set_values in sorted(sql_set.items()):
+            if not set_values:
+                continue
+
+            table_where = dict(sql_where.get(table, {}))
+            if not table_where:
+                filterable = sql_filterable_columns.get(table, set())
+                table_where = {
+                    key: value
+                    for key, value in cross_backend_filter.items()
+                    if key in filterable
+                }
+
+            sql_queries.append(
+                {
+                    "type": "update",
+                    "table": table,
+                    "set": set_values,
+                    "where": table_where,
+                }
+            )
 
         mongo_queries = [
             {
                 "type": "update_many",
                 "collection": collection,
                 "set": set_values,
-                "filter": mongo_filter.get(collection, {}),
+                "filter": mongo_filter.get(collection, {}) or dict(cross_backend_filter),
             }
             for collection, set_values in sorted(mongo_set.items())
             if set_values

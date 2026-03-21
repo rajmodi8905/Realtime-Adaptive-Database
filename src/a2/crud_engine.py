@@ -426,7 +426,164 @@ class CrudEngine:
            (type consistency check).
         4. Return update counts per backend.
         """
-        raise NotImplementedError("Implement update execution with schema validation")
+        errors: list[str] = []
+        sql_updated = 0
+        mongo_updated = 0
+
+        def build_sql_where_clause(where: dict[str, Any]) -> tuple[str, list[Any]]:
+            if not where:
+                return "", []
+            conds: list[str] = []
+            params: list[Any] = []
+            for col, val in where.items():
+                conds.append(f"`{col}` = %s")
+                params.append(val)
+            return " AND ".join(conds), params
+
+        def build_sql_update(query: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+            table = query.get("table")
+            if not table:
+                raise ValueError("SQL update query missing 'table'")
+
+            set_values = dict(query.get("set") or {})
+            if not set_values:
+                raise ValueError("SQL update query missing 'set' values")
+
+            set_parts: list[str] = []
+            params: list[Any] = []
+            for col, val in set_values.items():
+                set_parts.append(f"`{col}` = %s")
+                params.append(val)
+
+            sql = f"UPDATE `{table}` SET " + ", ".join(set_parts)
+
+            where = dict(query.get("where") or {})
+            where_clause, where_params = build_sql_where_clause(where)
+            if where_clause:
+                sql += " WHERE " + where_clause
+                params.extend(where_params)
+
+            return sql, tuple(params)
+
+        def count_sql_rows(query: dict[str, Any]) -> int:
+            table = query.get("table")
+            if not table:
+                raise ValueError("SQL update query missing 'table'")
+
+            where = dict(query.get("where") or {})
+            where_clause, where_params = build_sql_where_clause(where)
+            count_sql = f"SELECT COUNT(*) AS cnt FROM `{table}`"
+            if where_clause:
+                count_sql += " WHERE " + where_clause
+
+            rows = mysql_client.fetch_all(
+                count_sql,
+                tuple(where_params) if where_params else None,
+            )
+            if not rows:
+                return 0
+            first = rows[0]
+            if isinstance(first, dict):
+                value = first.get("cnt")
+            else:
+                value = None
+            return int(value or 0)
+
+        def run_mongo_update(query: dict[str, Any]) -> int:
+            collection = query.get("collection")
+            if not collection:
+                raise ValueError("Mongo update query missing 'collection'")
+
+            update_filter = dict(query.get("filter") or {})
+            set_values = dict(query.get("set") or {})
+            if not set_values:
+                return 0
+
+            query_type = str(query.get("type") or "update_many").lower()
+
+            if hasattr(mongo_client, "client") and getattr(mongo_client, "client", None) is not None:
+                db_name = getattr(mongo_client, "database", None)
+                if not db_name:
+                    raise ValueError("Mongo client missing database name")
+
+                db = mongo_client.client[db_name]
+                if collection == "*":
+                    modified_total = 0
+                    for collection_name in db.list_collection_names():
+                        coll = db[collection_name]
+                        if query_type == "update_one":
+                            result = coll.update_one(update_filter, {"$set": set_values})
+                        else:
+                            result = coll.update_many(update_filter, {"$set": set_values})
+                        modified_total += int(getattr(result, "modified_count", 0))
+                    return modified_total
+
+                coll = db[collection]
+                if query_type == "update_one":
+                    result = coll.update_one(update_filter, {"$set": set_values})
+                else:
+                    result = coll.update_many(update_filter, {"$set": set_values})
+                return int(getattr(result, "modified_count", 0))
+
+            if query_type == "update_one" and hasattr(mongo_client, "update_one"):
+                result = mongo_client.update_one(collection, update_filter, {"$set": set_values})
+                if isinstance(result, int):
+                    return result
+                return int(getattr(result, "modified_count", 0))
+            if hasattr(mongo_client, "update_many"):
+                result = mongo_client.update_many(collection, update_filter, {"$set": set_values})
+                if isinstance(result, int):
+                    return result
+                return int(getattr(result, "modified_count", 0))
+
+            raise ValueError("Mongo client does not support update operations")
+
+        for idx, query in enumerate(plan.sql_queries or []):
+            if query.get("type") not in (None, "update"):
+                errors.append(
+                    f"SQL query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
+                )
+                continue
+            if mysql_client is None:
+                errors.append("SQL update execution failed: mysql_client is not provided")
+                break
+
+            try:
+                affected = count_sql_rows(query)
+                sql, params = build_sql_update(query)
+                mysql_client.execute(sql, params if params else None)
+                sql_updated += affected
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"SQL query #{idx + 1} execution failed: {exc}")
+
+        for idx, query in enumerate(plan.mongo_queries or []):
+            if query.get("type") not in (None, "update_many", "update_one"):
+                errors.append(
+                    f"Mongo query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
+                )
+                continue
+            if mongo_client is None:
+                errors.append("Mongo update execution failed: mongo_client is not provided")
+                break
+
+            try:
+                mongo_updated += run_mongo_update(query)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Mongo query #{idx + 1} execution failed: {exc}")
+
+        status = (
+            "partial_success"
+            if errors and (sql_updated or mongo_updated)
+            else ("error" if errors else "success")
+        )
+        return {
+            "status": status,
+            "operation": "update",
+            "message": "Update executed with warnings." if errors else "Update executed successfully.",
+            "sql_updated": sql_updated,
+            "mongo_updated": mongo_updated,
+            "errors": errors,
+        }
 
     def _execute_delete(self, plan: QueryPlan, mysql_client, mongo_client) -> dict:
         """Delete: cascade deletion across SQL + MongoDB.
