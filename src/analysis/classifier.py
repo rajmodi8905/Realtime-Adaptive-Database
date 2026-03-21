@@ -65,7 +65,7 @@
 #
 # ==============================================
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 from .field_stats import FieldStats
 from .decision import PlacementDecision, ClassificationThresholds, Backend, TypeConflict
 
@@ -116,16 +116,69 @@ class Classifier:
             decision = self.classify_field(
                 field_name,
                 field_stats,
-                total_records
+                total_records,
+                field_stats=field_stats,
             )
             decisions[field_name] = decision
         
+        # POST-PROCESSING: Demote SQL-bound fields that are nested under
+        # a MongoDB-bound array — they would produce orphaned tables with
+        # no FK to any SQL parent.
+        self._demote_orphaned_fields(decisions)
+
         # POST-PROCESSING: Dynamically determine primary key from observed data
         # Find the best candidate for primary key among SQL-bound fields
         self._assign_primary_key(decisions, stats, total_records)
         
         return decisions
-    
+
+    def _demote_orphaned_fields(
+        self,
+        decisions: Dict[str, PlacementDecision],
+    ) -> None:
+        """Demote SQL-bound fields whose ancestor is a MongoDB-bound array.
+
+        When a parent array (e.g. ``post.comments``) is classified as MongoDB,
+        any child field or sub-array beneath it (e.g. ``post.comments.reactions``,
+        ``post.comments.reactions.count``) cannot have a valid FK back to a SQL
+        parent.  Keeping them in SQL would create orphaned tables.
+
+        This method walks every SQL/BOTH field and checks whether any of its
+        ancestor dot-paths is a MongoDB array.  If so, it reclassifies the
+        field to MongoDB.
+        """
+        # Collect all MongoDB-bound array paths
+        mongo_array_paths: set = set()
+        for field_name, decision in decisions.items():
+            if (
+                decision.backend == Backend.MONGODB
+                and decision.canonical_type == "array"
+            ):
+                mongo_array_paths.add(field_name)
+
+        if not mongo_array_paths:
+            return
+
+        # Demote any SQL/BOTH field nested under a MongoDB array
+        for field_name, decision in decisions.items():
+            if decision.backend not in (Backend.SQL, Backend.BOTH):
+                continue
+
+            parts = field_name.split(".")
+            for i in range(1, len(parts)):
+                ancestor = ".".join(parts[:i])
+                if ancestor in mongo_array_paths:
+                    decision.backend = Backend.MONGODB
+                    decision.sql_column_name = None
+                    decision.sql_type = None
+                    decision.mongo_path = field_name
+                    decision.reason = (
+                        f"Field '{field_name}' demoted to MongoDB: "
+                        f"ancestor array '{ancestor}' is MongoDB-bound, "
+                        f"so child fields cannot have a valid SQL FK relationship."
+                    )
+                    break
+
     def _assign_primary_key(
         self,
         decisions: Dict[str, PlacementDecision],
@@ -221,7 +274,8 @@ class Classifier:
         self,
         field_name: str,
         stats: FieldStats,
-        total_records: int
+        total_records: int,
+        field_stats: Optional[FieldStats] = None,
     ) -> PlacementDecision:
         """
         Classify a single field using type-based heuristic rules.
@@ -286,21 +340,9 @@ class Classifier:
         # Keep SQL column names aligned with canonical dot-notation field names.
         sql_column_name = field_name
 
-        # RULE 2: ARRAY FIELDS → MONGODB
-        # Arrays must stay in MongoDB because SQL doesn't handle arrays natively
+        # RULE 2: ARRAY FIELDS → SQL (normalizable) or MONGODB (complex)
         if dominant_type == "array":
-            reason = (
-                f"Field '{field_name}' is an array type. "
-                f"MongoDB's native array support is required; SQL would need junction tables."
-            )
-            return PlacementDecision(
-                field_name=field_name,
-                backend=Backend.MONGODB,
-                mongo_path=field_name,
-                canonical_type="array",
-                is_nullable=stats.null_count > 0,
-                reason=reason,
-            )
+            return self._classify_array_field(field_name, stats, total_records, field_stats,)
 
         # RULE 3: OBJECT FIELDS → MONGODB
         # Objects (dicts) stay in MongoDB unless very shallow and stable
@@ -415,6 +457,153 @@ class Classifier:
         else:
             # Unknown type, use TEXT as safest option
             return "TEXT"
+
+    def _classify_array_field(
+        self,
+        field_name: str,
+        stats: FieldStats,
+        total_records: int = 0,
+        field_stats: Optional[FieldStats] = None,
+    ) -> PlacementDecision:
+        """
+        Classify an array field based on the type of its elements.
+
+        Inspects sample_values from FieldStats to determine what the array
+        contains, then routes accordingly:
+          - Scalars or flat objects → SQL (child table via normalization engine)
+          - Nested/complex objects or mixed types → MongoDB
+          - No samples available → MongoDB (safe fallback)
+          - Low presence ratio → MongoDB (insufficient evidence)
+
+        Args:
+            field_name: The field to classify
+            stats: The accumulated FieldStats for this field
+            total_records: Total records analyzed (for presence ratio)
+            field_stats: Optional FieldStats with sample_values for inspection
+
+        Returns:
+            PlacementDecision routing the array to SQL or MongoDB
+        """
+
+        # Presence ratio gate: if the array hasn't appeared often enough,
+        # we don't have enough evidence to confidently route it to SQL.
+        presence_ratio = stats.presence_count / total_records if total_records > 0 else 0.0
+        if presence_ratio < self.thresholds.min_presence_ratio:
+            reason = (
+                f"Field '{field_name}' is an array with low presence "
+                f"({presence_ratio*100:.1f}% < {self.thresholds.min_presence_ratio*100:.0f}%). "
+                f"Insufficient data to determine array structure; defaulting to MongoDB."
+            )
+            return PlacementDecision(
+                field_name=field_name,
+                backend=Backend.MONGODB,
+                mongo_path=field_name,
+                canonical_type="array",
+                is_nullable=stats.null_count > 0,
+                reason=reason,
+            )
+
+        element_kind = self._analyze_array_elements(field_stats or stats)
+
+        if element_kind in ("scalar", "flat_object"):
+            # Normalizable array → SQL child table
+            reason = (
+                f"Field '{field_name}' is an array of {element_kind}s. "
+                f"Suitable for SQL normalization into a child table with PK/FK."
+            )
+            return PlacementDecision(
+                field_name=field_name,
+                backend=Backend.SQL,
+                sql_column_name=field_name,
+                sql_type=None,  # determined by normalization engine
+                mongo_path=field_name,
+                canonical_type="array",
+                is_nullable=stats.null_count > 0,
+                reason=reason,
+            )
+        else:
+            # Complex / nested / unknown → MongoDB
+            reason = (
+                f"Field '{field_name}' is an array of {element_kind}s. "
+                f"MongoDB's native document model is better suited for complex/nested arrays."
+            )
+            return PlacementDecision(
+                field_name=field_name,
+                backend=Backend.MONGODB,
+                mongo_path=field_name,
+                canonical_type="array",
+                is_nullable=stats.null_count > 0,
+                reason=reason,
+            )
+
+    @staticmethod
+    def _analyze_array_elements(stats: FieldStats) -> str:
+        """
+        Determine the kind of elements inside an array field.
+
+        Inspects FieldStats.sample_values (actual observed array values)
+        to classify the array content:
+          - "scalar"       : all elements are int/float/str/bool
+          - "flat_object"  : all elements are dicts with only scalar values
+          - "nested_object": elements are dicts containing other dicts/lists
+          - "unknown"      : no samples or mixed/unrecognizable types
+
+        Args:
+            stats: FieldStats for the array field
+
+        Returns:
+            One of "scalar", "flat_object", "nested_object", "unknown"
+        """
+        samples = getattr(stats, "sample_values", None)
+        if not samples:
+            return "unknown"
+
+        # Collect all individual elements from sampled arrays
+        elements = []
+        for sample in samples:
+            if isinstance(sample, list):
+                elements.extend(sample)
+            else:
+                # sample_value is the array itself; if not a list, skip
+                continue
+
+        if not elements:
+            return "unknown"
+
+        has_scalar = False
+        has_flat_dict = False
+        has_nested = False
+
+        for elem in elements:
+            if isinstance(elem, (int, float, str, bool)):
+                has_scalar = True
+            elif isinstance(elem, dict):
+                # Check if dict values are all scalars (flat) or contain nesting
+                if any(isinstance(v, (dict, list)) for v in elem.values()):
+                    has_nested = True
+                else:
+                    has_flat_dict = True
+            elif isinstance(elem, list):
+                has_nested = True
+            else:
+                # Other types treated as scalar-like
+                has_scalar = True
+
+        # If any element is nested, the whole array is complex
+        if has_nested:
+            return "nested_object"
+
+        # Mixed scalars + flat dicts → treat as complex (safe fallback)
+        if has_scalar and has_flat_dict:
+            return "unknown"
+
+        if has_flat_dict:
+            return "flat_object"
+
+        if has_scalar:
+            return "scalar"
+
+        return "unknown"
 
     def get_backend_distribution(
         self,
