@@ -124,12 +124,27 @@ class ClassificationThresholds:
         min_presence_ratio: float = 0.7,
         min_type_stability: float = 0.9,
         max_unique_ratio: float = 0.95,
-        min_records_for_decision: int = 50
+        min_records_for_decision: int = 50,
+        array_min_presence_ratio: float = 0.5,
+        array_min_type_stability: float = 0.75,
+        array_min_scalar_ratio: float = 1.0,
+        array_max_average_length: float = 32.0,
+        array_max_length: int = 128,
+        array_max_empty_ratio: float = 0.5,
+        array_max_length_span: int = 32,
     ):
         self.min_presence_ratio = min_presence_ratio
         self.min_type_stability = min_type_stability
         self.max_unique_ratio = max_unique_ratio
         self.min_records_for_decision = min_records_for_decision
+        # Array-specific thresholds are used only by array routing logic.
+        self.array_min_presence_ratio = array_min_presence_ratio
+        self.array_min_type_stability = array_min_type_stability
+        self.array_min_scalar_ratio = array_min_scalar_ratio
+        self.array_max_average_length = array_max_average_length
+        self.array_max_length = array_max_length
+        self.array_max_empty_ratio = array_max_empty_ratio
+        self.array_max_length_span = array_max_length_span
 
 
 class TypeConflict:

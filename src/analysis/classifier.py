@@ -286,12 +286,33 @@ class Classifier:
         # Keep SQL column names aligned with canonical dot-notation field names.
         sql_column_name = field_name
 
-        # RULE 2: ARRAY FIELDS → MONGODB
-        # Arrays must stay in MongoDB because SQL doesn't handle arrays natively
+        # RULE 2: ARRAY FIELDS → HEURISTIC (SQL for eligible scalar arrays, else MongoDB)
         if dominant_type == "array":
+            should_route_sql, details = self._should_route_scalar_array_to_sql(
+                stats,
+                presence_ratio,
+                type_stability,
+            )
+
+            if should_route_sql:
+                reason = (
+                    f"Field '{field_name}' is an array of scalars and satisfies SQL-array "
+                    f"heuristics ({details}). Routed to SQL for normalized child-table storage."
+                )
+                return PlacementDecision(
+                    field_name=field_name,
+                    backend=Backend.SQL,
+                    sql_column_name=sql_column_name,
+                    sql_type="TEXT",
+                    mongo_path=field_name,
+                    canonical_type="array",
+                    is_nullable=stats.null_count > 0 or presence_ratio < 1.0,
+                    reason=reason,
+                )
+
             reason = (
-                f"Field '{field_name}' is an array type. "
-                f"MongoDB's native array support is required; SQL would need junction tables."
+                f"Field '{field_name}' is an array type but does not satisfy SQL-array "
+                f"heuristics ({details}). Routed to MongoDB."
             )
             return PlacementDecision(
                 field_name=field_name,
@@ -415,6 +436,73 @@ class Classifier:
         else:
             # Unknown type, use TEXT as safest option
             return "TEXT"
+
+    def _should_route_scalar_array_to_sql(
+        self,
+        stats: FieldStats,
+        presence_ratio: float,
+        type_stability: float,
+    ) -> tuple[bool, str]:
+        """Return SQL eligibility for arrays-of-scalars using balanced heuristics."""
+        # Guard: require observed arrays.
+        if stats.array_observations == 0:
+            return False, "no_array_observations"
+
+        # Arrays containing nested elements remain in MongoDB.
+        if stats.array_scalar_ratio < self.thresholds.array_min_scalar_ratio:
+            return (
+                False,
+                f"scalar_ratio={stats.array_scalar_ratio:.2f}<min={self.thresholds.array_min_scalar_ratio:.2f}",
+            )
+
+        if presence_ratio < self.thresholds.array_min_presence_ratio:
+            return (
+                False,
+                f"presence={presence_ratio:.2f}<min={self.thresholds.array_min_presence_ratio:.2f}",
+            )
+
+        if type_stability < self.thresholds.array_min_type_stability:
+            return (
+                False,
+                f"type_stability={type_stability:.2f}<min={self.thresholds.array_min_type_stability:.2f}",
+            )
+
+        if stats.array_avg_length > self.thresholds.array_max_average_length:
+            return (
+                False,
+                f"avg_len={stats.array_avg_length:.2f}>max={self.thresholds.array_max_average_length:.2f}",
+            )
+
+        if stats.array_max_length > self.thresholds.array_max_length:
+            return (
+                False,
+                f"max_len={stats.array_max_length}>max={self.thresholds.array_max_length}",
+            )
+
+        if stats.array_empty_ratio > self.thresholds.array_max_empty_ratio:
+            return (
+                False,
+                f"empty_ratio={stats.array_empty_ratio:.2f}>max={self.thresholds.array_max_empty_ratio:.2f}",
+            )
+
+        if stats.array_length_span > self.thresholds.array_max_length_span:
+            return (
+                False,
+                f"length_span={stats.array_length_span}>max={self.thresholds.array_max_length_span}",
+            )
+
+        return (
+            True,
+            (
+                f"scalar_ratio={stats.array_scalar_ratio:.2f}, "
+                f"avg_len={stats.array_avg_length:.2f}, "
+                f"max_len={stats.array_max_length}, "
+                f"empty_ratio={stats.array_empty_ratio:.2f}, "
+                f"length_span={stats.array_length_span}, "
+                f"presence={presence_ratio:.2f}, "
+                f"type_stability={type_stability:.2f}"
+            ),
+        )
 
     def get_backend_distribution(
         self,

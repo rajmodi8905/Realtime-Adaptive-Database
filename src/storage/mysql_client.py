@@ -107,7 +107,7 @@ class MySQLClient:
                 # Table doesn't exist, create it
                 columns_def: str = ""
                 for field, decision in decisions.items():
-                    if decision.backend in (Backend.SQL, Backend.BOTH):
+                    if decision.backend in (Backend.SQL, Backend.BOTH) and decision.canonical_type != "array":
                         is_nullable = "NULL" if decision.is_nullable else "NOT NULL"
                         dtype = decision.sql_type or "VARCHAR(255)"
                         is_unique = "UNIQUE" if decision.is_unique else ""
@@ -128,7 +128,11 @@ class MySQLClient:
                 rows = cast(list[Tuple[Any, ...]], cursor.fetchall())
                 existing_columns = set(row[0] for row in rows)
                 for field, decision in decisions.items():
-                    if decision.backend in (Backend.SQL, Backend.BOTH) and field not in existing_columns:
+                    if (
+                        decision.backend in (Backend.SQL, Backend.BOTH)
+                        and decision.canonical_type != "array"
+                        and field not in existing_columns
+                    ):
                         is_nullable = "NULL" if decision.is_nullable else "NOT NULL"
                         dtype = decision.sql_type or "VARCHAR(255)"
                         is_unique = "UNIQUE" if decision.is_unique else ""
@@ -136,6 +140,60 @@ class MySQLClient:
                         cursor.execute(alter_query)
             self.connection.commit()
             cursor.close()
+
+    def ensure_array_table(
+        self,
+        table_name: str,
+        parent_key_column: str,
+        parent_key_sql_type: str,
+        value_sql_type: str = "TEXT",
+    ) -> None:
+        """Ensure normalized array child table exists for SQL-routed array fields."""
+        if self.connection is None:
+            raise RuntimeError("Not connected to MySQL")
+
+        cursor = self.connection.cursor()
+        ddl = (
+            f"CREATE TABLE IF NOT EXISTS `{table_name}` ("
+            f"`{parent_key_column}` {parent_key_sql_type} NOT NULL, "
+            "`item_index` INT NOT NULL, "
+            f"`value` {value_sql_type} NULL, "
+            f"UNIQUE KEY `uq_{table_name}_parent_idx` (`{parent_key_column}`, `item_index`), "
+            f"INDEX `idx_{table_name}_parent` (`{parent_key_column}`)"
+            ")"
+        )
+        cursor.execute(ddl)
+        self.connection.commit()
+        cursor.close()
+
+    def replace_array_values(
+        self,
+        table_name: str,
+        parent_key_column: str,
+        parent_key_value: Any,
+        values: list[Any],
+    ) -> int:
+        """Replace all array rows for a parent key with the provided list values."""
+        if self.connection is None:
+            raise RuntimeError("Not connected to MySQL")
+
+        cursor = self.connection.cursor()
+        delete_query = f"DELETE FROM `{table_name}` WHERE `{parent_key_column}` = %s"
+        cursor.execute(delete_query, (parent_key_value,))
+
+        inserted = 0
+        if values:
+            insert_query = (
+                f"INSERT INTO `{table_name}` (`{parent_key_column}`, `item_index`, `value`) "
+                "VALUES (%s, %s, %s)"
+            )
+            for idx, value in enumerate(values):
+                cursor.execute(insert_query, (parent_key_value, idx, value))
+                inserted += 1
+
+        self.connection.commit()
+        cursor.close()
+        return inserted
         
     def insert_batch(self, table_name: str, records: list[dict], primary_key_field: str = None) -> int:
         # Insert or update multiple records (upsert), return count processed
