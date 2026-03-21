@@ -207,37 +207,50 @@ class MongoDecompositionEngine:
         collections_created = 0
         indexes_created = 0
         errors: list[dict[str, str]] = []
+        indexed_pairs: set[tuple[str, str]] = set()
 
         for plan in collections:
-            # --- 1. Root collection -------------------------------------------
-            collections_created += self._ensure_collection(
-                db, plan.collection_name, existing_collections, errors
-            )
-
-            # --- 2. Reference sub-collections + indexes -----------------------
-            for ref_path, ref_col_name in plan.reference_collections.items():
-                collections_created += self._ensure_collection(
-                    db, ref_col_name, existing_collections, errors
+            if plan.collection_name not in existing_collections:
+                logger.info(
+                    "Skipping collection creation for '%s' (lazy-create on first insert).",
+                    plan.collection_name,
                 )
+                continue
+
+            # Root-side join-key index (only on existing collections).
+            parent_ref_key = sql_root_pk if sql_root_pk else "_ref_id"
+            root_pair = (plan.collection_name, parent_ref_key)
+            if root_pair not in indexed_pairs:
+                try:
+                    db[plan.collection_name].create_index([(parent_ref_key, 1)], background=True)
+                    indexes_created += 1
+                    indexed_pairs.add(root_pair)
+                    logger.info("Index created: %s.%s", plan.collection_name, parent_ref_key)
+                except Exception as exc:  # noqa: BLE001
+                    msg = f"Parent ref-key index failed on {plan.collection_name}.{parent_ref_key}: {exc}"
+                    logger.warning(msg)
+
+            # Reference-side index only when collection already exists.
+            for ref_path, ref_col_name in plan.reference_collections.items():
+                if ref_col_name not in existing_collections:
+                    logger.info(
+                        "Skipping index on '%s' because collection does not exist yet.",
+                        ref_col_name,
+                    )
+                    continue
+
+                ref_pair = (ref_col_name, "_ref_id")
+                if ref_pair in indexed_pairs:
+                    continue
                 try:
                     db[ref_col_name].create_index([("_ref_id", 1)], background=True)
                     indexes_created += 1
+                    indexed_pairs.add(ref_pair)
                     logger.info("Index created: %s._ref_id", ref_col_name)
                 except Exception as exc:  # noqa: BLE001
                     msg = f"Index creation failed on {ref_col_name}._ref_id: {exc}"
                     logger.error(msg)
                     errors.append({"collection": ref_col_name, "error": msg})
-
-                # Also index the parent reference key on the root collection
-                parent_ref_key = sql_root_pk if sql_root_pk else "_ref_id"
-                try:
-                    db[plan.collection_name].create_index([(parent_ref_key, 1)], background=True)
-                    indexes_created += 1
-                    logger.info("Index created: %s.%s", plan.collection_name, parent_ref_key)
-                except Exception as exc:  # noqa: BLE001
-                    msg = f"Parent ref-key index failed on {plan.collection_name}.{parent_ref_key}: {exc}"
-                    logger.warning(msg)
-                    # Non-fatal: root-side index is a performance optimisation only
 
         result = {
             "collections_created": collections_created,
@@ -411,14 +424,12 @@ class MongoDecompositionEngine:
             root="user_profiles", path="address"          → "user_profiles_addresses"
             root="blog_posts",    path="post.comments"    → "blog_posts_comments"
         """
-        # Use only the leaf segment of the path
-        leaf = field_path.split(".")[-1].lower()
-        leaf = re.sub(r"[^a-z0-9_]", "_", leaf)
-        if leaf.endswith("y"):
-            leaf = leaf[:-1] + "ies"
-        elif not leaf.endswith("s"):
-            leaf = leaf + "s"
-        return f"{root_collection}_{leaf}"
+        normalized_path = field_path.lower().replace(".", "_")
+        normalized_path = re.sub(r"[^a-z0-9_]", "_", normalized_path)
+        normalized_path = re.sub(r"_+", "_", normalized_path).strip("_")
+        if not normalized_path:
+            return root_collection
+        return f"{root_collection}_{normalized_path}"
 
     @staticmethod
     def _ensure_collection(

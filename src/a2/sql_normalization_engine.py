@@ -1,3 +1,4 @@
+import re
 from .contracts import ClassifiedField, RelationshipPlan, SchemaRegistration, SqlTablePlan
 
 
@@ -62,11 +63,19 @@ class SqlNormalizationEngine:
                 array_paths.add(cf.field_path)
 
         # ── 2. Collect SQL-bound scalar fields (become table columns) ──
+        mongo_array_paths = {
+            cf.field_path
+            for cf in classified_fields
+            if (cf.is_array or cf.canonical_type == "array")
+            and cf.backend.upper() in ("MONGODB", "NOSQL")
+        }
+
         sql_scalars = [
             cf
             for cf in classified_fields
             if cf.backend in ("SQL", "BOTH")
             and cf.canonical_type not in ("array", "object")
+            and not self._is_under_mongo_array(cf.field_path, mongo_array_paths)
         ]
 
         # ── 3. Group scalars by their owning entity ────────────────────
@@ -138,6 +147,24 @@ class SqlNormalizationEngine:
                 pk = self._find_pk_from_candidates(
                     columns, unique_candidates, entity_path, is_root
                 )
+
+            # Synthetic PK fallback: ensure every table has a stable row identity.
+            if not pk:
+                base_pk = f"{table_name}_id"
+                synthetic_pk = base_pk
+                suffix = 1
+                while synthetic_pk in columns:
+                    synthetic_pk = f"{base_pk}_{suffix}"
+                    suffix += 1
+
+                columns[synthetic_pk] = "BIGINT"
+                col_meta[synthetic_pk] = {
+                    "is_nullable": False,
+                    "is_unique": False,
+                    "is_primary_key": True,
+                    "is_synthetic_pk": True,
+                }
+                pk = synthetic_pk
 
             # Primitive-array: add a 'value' column
             if not is_root and not columns:
@@ -305,12 +332,23 @@ class SqlNormalizationEngine:
         return ""
 
     @staticmethod
+    def _is_under_mongo_array(field_path: str, mongo_array_paths: set[str]) -> bool:
+        """Return True if field_path is nested under an array classified for MongoDB."""
+        parts = field_path.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            candidate = ".".join(parts[:i])
+            if candidate in mongo_array_paths:
+                return True
+        return False
+
+    @staticmethod
     def _derive_table_name(entity_path: str, root_entity: str) -> str:
         """Map an entity path to a SQL table name."""
         if entity_path == "":
             return root_entity
-        # Use the last segment of the path as the table name
-        return entity_path.rsplit(".", 1)[-1]
+        normalized = re.sub(r"[^a-zA-Z0-9]+", "_", entity_path.strip())
+        normalized = re.sub(r"_+", "_", normalized).strip("_")
+        return normalized or root_entity
 
     @staticmethod
     def _derive_column_name(
@@ -381,6 +419,8 @@ class SqlNormalizationEngine:
 
             if not cm.get("is_nullable", True):
                 tokens.append("NOT NULL")
+            if col_name == table.primary_key and cm.get("is_synthetic_pk", False):
+                tokens.append("AUTO_INCREMENT")
             if cm.get("is_unique", False) and col_name != table.primary_key:
                 tokens.append("UNIQUE")
 
