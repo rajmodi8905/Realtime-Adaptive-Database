@@ -422,14 +422,22 @@ class QueryPlanner:
             payload.get("filters") or payload.get("where") or {},
             field_index,
         )
-        target_fields = self._resolve_requested_fields(
+        join_keys = self._infer_join_keys(field_locations)
+        explicit_target_fields = self._resolve_requested_fields(
             list(payload.get("fields") or []),
             field_index,
         )
+        target_fields = list(explicit_target_fields)
         if not target_fields:
             target_fields = list(filters.keys())
 
         sql_where, mongo_filter = self._split_filters(filters, field_index)
+
+        scoped_prefixes = {
+            field.split(".", 1)[0]
+            for field in explicit_target_fields
+            if "." in field
+        }
 
         sql_targets: set[str] = set()
         mongo_targets: set[str] = set()
@@ -443,28 +451,76 @@ class QueryPlanner:
             if backend == "mongo":
                 mongo_targets.add(loc.table_or_collection)
 
+        all_mongo_collections = sorted(
+            {
+                loc.table_or_collection
+                for loc in field_locations
+                if loc.backend.lower() == "mongo"
+            }
+        )
+
+        cross_backend_filter = {
+            field: value
+            for field, value in filters.items()
+            if field in join_keys
+        }
+
         # If no target fields are given, use tables/collections referenced by filters.
         if not sql_targets and sql_where:
             sql_targets = set(sql_where.keys())
         if not mongo_targets and mongo_filter:
             mongo_targets = set(mongo_filter.keys())
+        if not explicit_target_fields and not mongo_targets and cross_backend_filter:
+            mongo_targets = set(all_mongo_collections)
 
-        sql_queries = [
-            {
-                "type": "delete",
-                "table": table,
-                "where": sql_where.get(table, {}),
-            }
-            for table in sorted(sql_targets)
-        ]
-        mongo_queries = [
-            {
-                "type": "delete_many",
-                "collection": collection,
-                "filter": mongo_filter.get(collection, {}),
-            }
-            for collection in sorted(mongo_targets)
-        ]
+        if explicit_target_fields:
+            sql_queries = []
+        else:
+            sql_queries = [
+                {
+                    "type": "delete",
+                    "table": table,
+                    "where": sql_where.get(table, {}),
+                }
+                for table in sorted(sql_targets)
+            ]
+        mongo_queries: list[dict[str, Any]] = []
+        if not explicit_target_fields:
+            mongo_queries = [
+                {
+                    "type": "delete_many",
+                    "collection": collection,
+                    "filter": mongo_filter.get(collection, {}) or dict(cross_backend_filter),
+                }
+                for collection in sorted(mongo_targets)
+            ]
+
+        if explicit_target_fields and cross_backend_filter:
+            unset_paths: set[str] = set()
+            for field in explicit_target_fields:
+                if "." in field:
+                    unset_paths.add(field.split(".", 1)[0])
+                else:
+                    unset_paths.add(field)
+
+            if unset_paths:
+                mongo_queries.append(
+                    {
+                        "type": "unset_many",
+                        "collection": "*",
+                        "filter": dict(cross_backend_filter),
+                        "unset_paths": sorted(unset_paths),
+                    }
+                )
+
+        if cross_backend_filter and not explicit_target_fields:
+            mongo_queries.append(
+                {
+                    "type": "delete_many",
+                    "collection": "*",
+                    "filter": dict(cross_backend_filter),
+                }
+            )
 
         return QueryPlan(
             operation=CrudOperation.DELETE,
