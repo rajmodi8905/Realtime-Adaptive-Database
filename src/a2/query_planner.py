@@ -119,13 +119,62 @@ class QueryPlanner:
 
         sql_rows: dict[str, list[dict[str, Any]]] = {}
         mongo_docs: dict[str, list[dict[str, Any]]] = {}
+        join_keys = self._infer_join_keys(field_locations)
+
+        sql_locations_by_table: dict[str, list[FieldLocation]] = {}
+        for loc in field_locations:
+            if loc.backend.lower() in ("sql", "both"):
+                sql_locations_by_table.setdefault(loc.table_or_collection, []).append(loc)
+
+        table_entity_paths: dict[str, str] = {
+            table: self._infer_entity_path(locations)
+            for table, locations in sql_locations_by_table.items()
+        }
 
         for record in records:
             if not isinstance(record, dict):
                 continue
 
-            table_row_buffer: dict[str, dict[str, Any]] = {}
             collection_doc_buffer: dict[str, dict[str, Any]] = {}
+
+            for table, locations in sql_locations_by_table.items():
+                entity_path = table_entity_paths.get(table, "")
+                contexts = self._expand_entity_contexts(record, entity_path)
+
+                for context_node, ancestors in contexts:
+                    row: dict[str, Any] = {}
+                    for loc in locations:
+                        value = self._extract_sql_value(
+                            record=record,
+                            context_node=context_node,
+                            ancestors=ancestors,
+                            entity_path=entity_path,
+                            location=loc,
+                        )
+                        if value is _MISSING:
+                            continue
+                        row[loc.column_or_path] = value
+
+                    required_join_keys = {
+                        key
+                        for location in locations
+                        for key in location.join_keys
+                        if key
+                    }
+                    for key in sorted(required_join_keys):
+                        if key in row:
+                            continue
+                        key_value = self._extract_join_key_value(
+                            record,
+                            ancestors,
+                            key,
+                        )
+                        if key_value is _MISSING:
+                            continue
+                        row[key] = key_value
+
+                    if row:
+                        sql_rows.setdefault(table, []).append(row)
 
             for loc in field_locations:
                 value = self._extract_value(record, loc.field_path)
@@ -133,13 +182,15 @@ class QueryPlanner:
                     continue
 
                 backend = loc.backend.lower()
-                if backend in ("sql", "both"):
-                    row = table_row_buffer.setdefault(loc.table_or_collection, {})
-                    row[loc.column_or_path] = value
-
                 if backend in ("mongo", "both"):
                     doc = collection_doc_buffer.setdefault(loc.table_or_collection, {})
                     self._set_dotted_path(doc, loc.column_or_path, value)
+
+            root_join_key = next((key for key in join_keys if key in record), None)
+            if root_join_key:
+                root_value = record[root_join_key]
+                for doc in collection_doc_buffer.values():
+                    doc.setdefault(root_join_key, root_value)
 
             # Ensure required ingest timestamp exists when metadata expects it.
             if "sys_ingested_at" not in record:
@@ -149,15 +200,17 @@ class QueryPlanner:
                         continue
                     backend = loc.backend.lower()
                     if backend in ("sql", "both"):
-                        row = table_row_buffer.setdefault(loc.table_or_collection, {})
-                        row.setdefault(loc.column_or_path, now_utc)
+                        table = loc.table_or_collection
+                        rows_for_table = sql_rows.setdefault(table, [])
+                        if rows_for_table:
+                            for row in rows_for_table:
+                                row.setdefault(loc.column_or_path, now_utc)
+                        else:
+                            rows_for_table.append({loc.column_or_path: now_utc})
                     if backend in ("mongo", "both"):
                         doc = collection_doc_buffer.setdefault(loc.table_or_collection, {})
                         self._set_dotted_path(doc, loc.column_or_path, now_utc)
 
-            for table, row in table_row_buffer.items():
-                if row:
-                    sql_rows.setdefault(table, []).append(row)
             for collection, doc in collection_doc_buffer.items():
                 if doc:
                     mongo_docs.setdefault(collection, []).append(doc)
@@ -181,6 +234,134 @@ class QueryPlanner:
             mongo_queries=mongo_queries,
             merge_strategy={"mode": "none"},
         )
+
+    @staticmethod
+    def _infer_entity_path(locations: list[FieldLocation]) -> str:
+        prefixes: list[str] = []
+        for loc in locations:
+            if "." not in loc.field_path:
+                continue
+            prefixes.append(loc.field_path.rsplit(".", 1)[0])
+
+        if not prefixes:
+            return ""
+
+        common = prefixes[0]
+        for prefix in prefixes[1:]:
+            common = QueryPlanner._common_dot_prefix(common, prefix)
+            if not common:
+                break
+        return common
+
+    @staticmethod
+    def _common_dot_prefix(left: str, right: str) -> str:
+        left_parts = left.split(".")
+        right_parts = right.split(".")
+        common_parts: list[str] = []
+
+        for left_part, right_part in zip(left_parts, right_parts):
+            if left_part != right_part:
+                break
+            common_parts.append(left_part)
+
+        return ".".join(common_parts)
+
+    @staticmethod
+    def _expand_entity_contexts(
+        record: dict[str, Any],
+        entity_path: str,
+    ) -> list[tuple[Any, list[dict[str, Any]]]]:
+        if not entity_path:
+            return [(record, [record])]
+
+        contexts: list[tuple[Any, list[dict[str, Any]]]] = [(record, [record])]
+        for segment in entity_path.split("."):
+            next_contexts: list[tuple[Any, list[dict[str, Any]]]] = []
+            for node, ancestors in contexts:
+                if not isinstance(node, dict):
+                    continue
+                value = node.get(segment, _MISSING)
+                if value is _MISSING:
+                    continue
+
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, dict):
+                            next_contexts.append((item, ancestors + [item]))
+                        else:
+                            next_contexts.append((item, ancestors))
+                elif isinstance(value, dict):
+                    next_contexts.append((value, ancestors + [value]))
+                else:
+                    next_contexts.append((value, ancestors))
+
+            contexts = next_contexts
+            if not contexts:
+                break
+
+        return contexts
+
+    @staticmethod
+    def _extract_value_from_context(context_node: Any, relative_path: str) -> Any:
+        if (
+            not isinstance(context_node, dict)
+            and (relative_path == "value" or relative_path.endswith("_value"))
+        ):
+            return context_node
+        if not relative_path:
+            return context_node
+
+        current: Any = context_node
+        for segment in relative_path.split("."):
+            if not isinstance(current, dict) or segment not in current:
+                return _MISSING
+            current = current[segment]
+        return current
+
+    @staticmethod
+    def _extract_sql_value(
+        record: dict[str, Any],
+        context_node: Any,
+        ancestors: list[dict[str, Any]],
+        entity_path: str,
+        location: FieldLocation,
+    ) -> Any:
+        field_path = location.field_path
+
+        if entity_path and field_path.startswith(f"{entity_path}."):
+            relative = field_path[len(entity_path) + 1:]
+            value = QueryPlanner._extract_value_from_context(context_node, relative)
+        else:
+            value = QueryPlanner._extract_value(record, field_path)
+
+        if value is not _MISSING:
+            return value
+
+        if "." not in field_path:
+            for ancestor in reversed(ancestors):
+                if field_path in ancestor:
+                    return ancestor[field_path]
+
+        if field_path == "value" and not isinstance(context_node, dict):
+            return context_node
+
+        return _MISSING
+
+    @staticmethod
+    def _extract_join_key_value(
+        record: dict[str, Any],
+        ancestors: list[dict[str, Any]],
+        key: str,
+    ) -> Any:
+        value = QueryPlanner._extract_value(record, key)
+        if value is not _MISSING:
+            return value
+
+        for ancestor in reversed(ancestors):
+            if key in ancestor:
+                return ancestor[key]
+
+        return _MISSING
 
     def _build_update_plan(self, payload: dict, field_locations: list[FieldLocation], field_index: dict[str, FieldLocation]) -> QueryPlan:
         updates = self._resolve_filters(

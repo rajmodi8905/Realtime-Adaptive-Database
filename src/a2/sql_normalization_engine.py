@@ -142,6 +142,16 @@ class SqlNormalizationEngine:
                 if cf.is_primary_key:
                     pk = col
 
+            # Primitive-array: add a descriptive value column
+            if not is_root and not columns:
+                value_col = self._derive_primitive_array_value_column(entity_path)
+                columns[value_col] = "VARCHAR(255)"
+                col_meta[value_col] = {
+                    "is_nullable": False,
+                    "is_unique": False,
+                    "is_primary_key": False,
+                }
+
             # PK fallback: schema unique_candidates
             if not pk:
                 pk = self._find_pk_from_candidates(
@@ -165,15 +175,6 @@ class SqlNormalizationEngine:
                     "is_synthetic_pk": True,
                 }
                 pk = synthetic_pk
-
-            # Primitive-array: add a 'value' column
-            if not is_root and not columns:
-                columns["value"] = "VARCHAR(255)"
-                col_meta["value"] = {
-                    "is_nullable": False,
-                    "is_unique": False,
-                    "is_primary_key": False,
-                }
 
             # ── foreign key to parent ─────────────────────────────────
             foreign_keys: list[dict[str, str]] = []
@@ -365,6 +366,15 @@ class SqlNormalizationEngine:
         if field_path.startswith(prefix):
             return field_path[len(prefix):]
         return field_path
+
+    @staticmethod
+    def _derive_primitive_array_value_column(entity_path: str) -> str:
+        """Derive a readable scalar column name for primitive-array child tables."""
+        leaf = entity_path.rsplit(".", 1)[-1] if entity_path else "item"
+        normalized = re.sub(r"[^a-zA-Z0-9]+", "_", leaf).strip("_")
+        if not normalized:
+            normalized = "item"
+        return f"{normalized}_value"
 
     @staticmethod
     def _find_pk_from_candidates(
