@@ -460,6 +460,16 @@ class CrudEngine:
 
             return sql, tuple(params)
 
+        def build_sql_where_clause(where: dict[str, Any]) -> tuple[str, list[Any]]:
+            if not where:
+                return "", []
+            conds: list[str] = []
+            params: list[Any] = []
+            for col, val in where.items():
+                conds.append(f"`{col}` = %s")
+                params.append(val)
+            return " AND ".join(conds), params
+
         def count_sql_rows(query: dict[str, Any]) -> int:
             table = query.get("table")
             if not table:
@@ -485,6 +495,45 @@ class CrudEngine:
             else:
                 value = None
             return int(value or 0)
+
+        def attempt_sql_fk_cascade(query: dict[str, Any]) -> bool:
+            table = query.get("table")
+            if not table:
+                return False
+
+            where = query.get("where") or {}
+            where_clause, where_params = build_sql_where_clause(where)
+            if not where_clause:
+                return False
+
+            fk_query = (
+                "SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_COLUMN_NAME "
+                "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND REFERENCED_TABLE_NAME = %s"
+            )
+            child_fks = mysql_client.fetch_all(fk_query, (table,))
+            if not child_fks:
+                return False
+
+            cascaded = False
+            for fk in child_fks:
+                child_table = fk.get("TABLE_NAME") if isinstance(fk, dict) else None
+                child_column = fk.get("COLUMN_NAME") if isinstance(fk, dict) else None
+                parent_column = fk.get("REFERENCED_COLUMN_NAME") if isinstance(fk, dict) else None
+                if not child_table or not child_column or not parent_column:
+                    continue
+
+                delete_child_sql = (
+                    f"DELETE FROM `{child_table}` "
+                    f"WHERE `{child_column}` IN ("
+                    f"SELECT `{parent_column}` FROM `{table}` WHERE {where_clause}"
+                    ")"
+                )
+                mysql_client.execute(delete_child_sql, tuple(where_params))
+                cascaded = True
+
+            return cascaded
 
         def build_sql_nullify(query: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
             table = query.get("table")
@@ -585,9 +634,8 @@ class CrudEngine:
 
             raise ValueError("Mongo client does not support unset operations")
 
-        # Delete SQL records first from more-specific scopes when possible.
+        # Execute SQL deletes in planned order (planner handles child-first sequencing).
         sql_queries = list(plan.sql_queries or [])
-        sql_queries.sort(key=lambda q: len(q.get("where") or {}), reverse=True)
 
         for idx, query in enumerate(sql_queries):
             if query.get("type") not in (None, "delete", "nullify"):
@@ -608,7 +656,21 @@ class CrudEngine:
                 mysql_client.execute(sql, params if params else None)
                 sql_deleted += affected
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"SQL query #{idx + 1} execution failed: {exc}")
+                recovered = False
+                if query.get("type") == "delete":
+                    try:
+                        cascaded = attempt_sql_fk_cascade(query)
+                        if cascaded:
+                            affected = count_sql_rows(query)
+                            sql, params = build_sql_delete(query)
+                            mysql_client.execute(sql, params if params else None)
+                            sql_deleted += affected
+                            recovered = True
+                    except Exception:  # noqa: BLE001
+                        recovered = False
+
+                if not recovered:
+                    errors.append(f"SQL query #{idx + 1} execution failed: {exc}")
 
         for idx, query in enumerate(plan.mongo_queries or []):
             if query.get("type") not in (None, "delete_many", "delete_one", "unset_many"):
