@@ -85,15 +85,6 @@ class FieldStats:
     # --- Structure info ---
     is_nested: bool = False  # True if value is dict or list (from the original record)
 
-    # --- Array-specific metrics (for array routing heuristics) ---
-    array_observations: int = 0
-    array_total_length: int = 0
-    array_min_length: int = 0
-    array_max_length: int = 0
-    array_empty_count: int = 0
-    array_scalar_element_count: int = 0
-    array_non_scalar_element_count: int = 0
-
     # --- Debugging / inspection ---
     sample_values: List[Any] = field(default_factory=list)  # List of sample values for debugging
     max_samples: int = 5  # Max number of samples
@@ -130,27 +121,6 @@ class FieldStats:
         # Track nesting (for backwards compatibility, though we track in name now)
         if isinstance(value, (dict, list)):
             self.is_nested = True
-
-        # Track array composition/cardinality for array routing heuristics.
-        if detected_type == "array" and isinstance(value, list):
-            self.array_observations += 1
-            arr_len = len(value)
-            self.array_total_length += arr_len
-            if self.array_observations == 1:
-                self.array_min_length = arr_len
-                self.array_max_length = arr_len
-            else:
-                self.array_min_length = min(self.array_min_length, arr_len)
-                self.array_max_length = max(self.array_max_length, arr_len)
-
-            if arr_len == 0:
-                self.array_empty_count += 1
-
-            for item in value:
-                if isinstance(item, (dict, list)):
-                    self.array_non_scalar_element_count += 1
-                else:
-                    self.array_scalar_element_count += 1
 
         # Track unique values (bounded) — only for hashable types
         try:
@@ -210,35 +180,6 @@ class FieldStats:
         total_unique = len(self.unique_values) + self.unique_count
         return total_unique / self.presence_count
 
-    @property
-    def array_avg_length(self) -> float:
-        """Average observed array length for this field."""
-        if self.array_observations == 0:
-            return 0.0
-        return self.array_total_length / self.array_observations
-
-    @property
-    def array_scalar_ratio(self) -> float:
-        """Fraction of array elements that are scalar (non-dict, non-list)."""
-        total = self.array_scalar_element_count + self.array_non_scalar_element_count
-        if total == 0:
-            return 1.0
-        return self.array_scalar_element_count / total
-
-    @property
-    def array_empty_ratio(self) -> float:
-        """Fraction of array observations that were empty lists."""
-        if self.array_observations == 0:
-            return 0.0
-        return self.array_empty_count / self.array_observations
-
-    @property
-    def array_length_span(self) -> int:
-        """Observed max-min span of array lengths."""
-        if self.array_observations == 0:
-            return 0
-        return self.array_max_length - self.array_min_length
-
     # ======================================
     # Serialization
     # ======================================
@@ -261,13 +202,6 @@ class FieldStats:
             "unique_count": len(self.unique_values) + self.unique_count,
             "is_nested": self.is_nested,
             "sample_values": list(self.sample_values),
-            "array_observations": self.array_observations,
-            "array_total_length": self.array_total_length,
-            "array_min_length": self.array_min_length,
-            "array_max_length": self.array_max_length,
-            "array_empty_count": self.array_empty_count,
-            "array_scalar_element_count": self.array_scalar_element_count,
-            "array_non_scalar_element_count": self.array_non_scalar_element_count,
         }
 
     @classmethod
@@ -292,12 +226,4 @@ class FieldStats:
         fs.unique_count = data.get("unique_count", 0)
         fs.is_nested = data.get("is_nested", False)
         fs.sample_values = data.get("sample_values", [])
-        # Backward-compatible defaults for metadata persisted before array metrics existed.
-        fs.array_observations = data.get("array_observations", 0)
-        fs.array_total_length = data.get("array_total_length", 0)
-        fs.array_min_length = data.get("array_min_length", 0)
-        fs.array_max_length = data.get("array_max_length", 0)
-        fs.array_empty_count = data.get("array_empty_count", 0)
-        fs.array_scalar_element_count = data.get("array_scalar_element_count", 0)
-        fs.array_non_scalar_element_count = data.get("array_non_scalar_element_count", 0)
         return fs

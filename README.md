@@ -103,7 +103,7 @@ Detects semantic types from raw values beyond basic Python types.
 
 Processes raw JSON records before buffering:
 
-1. **Flattens nested structures** using dot notation (`metadata.version`)
+1. **Flattens nested structures** using underscore notation (`metadata.version` → `metadata_version`)
 2. **Coerces string values** to detected semantic types
 3. **Injects `sys_ingested_at`** timestamp for bi-temporal tracking
 4. **Tracks coercion metadata** for debugging (successful/failed coercions)
@@ -125,9 +125,6 @@ Data class that accumulates statistics for a single field:
 | `null_count` | Number of null/None values observed |
 | `unique_values` | Set of unique values (capped at 1000 for memory) |
 | `is_nested` | True if value is dict or list |
-| `array_observations` | Number of array observations for this field |
-| `array_avg_length` | Average length of observed arrays |
-| `array_scalar_ratio` | Fraction of array elements that are scalars |
 | `sample_values` | Small list of example values for debugging |
 
 **Computed Properties**:
@@ -135,8 +132,6 @@ Data class that accumulates statistics for a single field:
 - `type_stability`: `count(dominant_type) / total_observations` — measures consistency
 - `unique_ratio`: `unique_values / presence_count` — measures cardinality
 - `presence_ratio`: `presence_count / total_records` — measures sparsity
-- `array_empty_ratio`: empty-list frequency for array fields
-- `array_length_span`: `max_length - min_length` for array stability
 
 #### FieldAnalyzer
 
@@ -153,16 +148,9 @@ Applies heuristic rules to produce `PlacementDecision` for each field:
 | Rule | Condition | Backend |
 |------|-----------|---------|
 | 1 | Field is `username`, `sys_ingested_at`, or `t_stamp` | **BOTH** |
-| 2 | Array field with scalar-only + balanced array metrics (presence, stability, length, emptiness) | **SQL** |
-| 3 | Array field not meeting SQL-array heuristics | **MongoDB** |
-| 4 | Object field | **MongoDB** |
-| 5 | Scalar with `presence_ratio ≥ 70%` AND `type_stability ≥ 90%` | **SQL** |
-| 6 | Everything else | **MongoDB** |
-
-Array-specific behavior:
-- Arrays of scalars can be routed to SQL.
-- Arrays containing nested elements (dict/list) remain in MongoDB.
-- Canonical type remains `array` for bridge compatibility.
+| 2 | Value is nested (dict or list) | **MongoDB** |
+| 3 | `presence_ratio ≥ 70%` AND `type_stability ≥ 90%` | **SQL** |
+| 4 | Everything else | **MongoDB** |
 
 **SQL Type Mapping**:
 
@@ -223,13 +211,11 @@ Manages MySQL connection with dynamic schema creation:
 | `connect()` | Establish connection, create database if missing |
 | `ensure_table(table, decisions)` | Create table or ALTER to add new columns |
 | `insert_batch(table, records, pk)` | Batch upsert (INSERT ... ON DUPLICATE KEY UPDATE) |
-| `ensure_array_table(table, parent_key, parent_key_type)` | Create normalized SQL child table for array fields |
-| `replace_array_values(table, parent_key, parent_value, values)` | Replace array elements for one parent key |
 | `alter_column_type(table, col, type)` | Widen column type for migrations |
 | `drop_column(table, col)` | Remove column when field moves to MongoDB |
 | `get_current_columns(table)` | Query INFORMATION_SCHEMA for existing schema |
 
-**Dynamic DDL**: Tables are created/modified at runtime based on `PlacementDecision`. SQL-routed arrays are normalized into dedicated child tables (`records__arr__<field_path>`), not stored as raw list columns in `records`.
+**Dynamic DDL**: Tables are created/modified at runtime based on `PlacementDecision`. No predefined schema required.
 
 #### MongoClient
 
@@ -253,11 +239,9 @@ Splits records between backends based on decisions:
    - `Backend.MONGODB` → mongo_part only
    - `Backend.BOTH` → both parts
    - Unknown fields → mongo_part (safe default)
-2. For array fields routed to SQL, write values to normalized SQL child tables keyed by the main SQL primary key.
-3. Do not copy SQL-only array fields to MongoDB.
 
-4. Batch upsert non-array sql_parts to MySQL main table
-5. Batch upsert mongo_parts to MongoDB
+2. Batch upsert sql_parts to MySQL
+3. Batch upsert mongo_parts to MongoDB
 
 **Primary Key Handling**: Uses the classifier's primary key for upsert matching. Falls back to first unique non-timestamp field for MongoDB if needed.
 
@@ -393,15 +377,8 @@ cd Realtime-Adaptive-Database
 ### 2. Start Databases
 
 ```bash
-docker compose up -d
+docker-compose up -d
 docker ps  # Verify: adaptive_db_mysql, adaptive_db_mongodb
-```
-
-If host port `3306` is already in use on your machine:
-
-```bash
-MYSQL_PORT=3307 docker compose up -d mysql mongodb
-export MYSQL_PORT=3307
 ```
 
 ### 3. Install Dependencies
@@ -547,8 +524,8 @@ docker-compose up -d
 
 ### Check Logs
 ```bash
-docker compose logs mysql
-docker compose logs mongodb
+docker-compose logs mysql
+docker-compose logs mongodb
 ```
 
 ---

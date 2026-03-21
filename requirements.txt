@@ -7,8 +7,4 @@ python-dotenv==1.0.0
 # HTTP client (optional - only needed for data stream)
 requests==2.31.0
 
-# Test dependencies (needed because pyproject pytest config uses --cov)
-pytest==8.0.0
-pytest-cov==4.1.0
-
 # Note: pydantic and httpx removed since they're not actually used in the core code

@@ -203,16 +203,6 @@ class Migrator:
             "success": True,
             "error": None
         }
-
-        # Array migrations require normalized child-table handling and are not
-        # safely representable through the scalar column copy paths below.
-        if new_decision.canonical_type == "array":
-            result["success"] = False
-            result["error"] = (
-                "Array backend migration requires normalized child-table handling and was skipped "
-                "to avoid partial/destructive migration."
-            )
-            return result
         
         try:
             # Determine migration path
