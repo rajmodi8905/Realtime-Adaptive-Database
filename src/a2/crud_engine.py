@@ -438,4 +438,269 @@ class CrudEngine:
         4. For MongoDB, run delete_one/delete_many on each collection.
         5. Return deletion counts per backend.
         """
-        raise NotImplementedError("Implement cascading delete across backends")
+        errors: list[str] = []
+        sql_deleted = 0
+        mongo_deleted = 0
+
+        def build_sql_delete(query: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+            table = query.get("table")
+            if not table:
+                raise ValueError("SQL delete query missing 'table'")
+
+            where = query.get("where") or {}
+            params: list[Any] = []
+            sql = f"DELETE FROM `{table}`"
+
+            if where:
+                conds: list[str] = []
+                for col, val in where.items():
+                    conds.append(f"`{col}` = %s")
+                    params.append(val)
+                sql += " WHERE " + " AND ".join(conds)
+
+            return sql, tuple(params)
+
+        def build_sql_where_clause(where: dict[str, Any]) -> tuple[str, list[Any]]:
+            if not where:
+                return "", []
+            conds: list[str] = []
+            params: list[Any] = []
+            for col, val in where.items():
+                conds.append(f"`{col}` = %s")
+                params.append(val)
+            return " AND ".join(conds), params
+
+        def count_sql_rows(query: dict[str, Any]) -> int:
+            table = query.get("table")
+            if not table:
+                raise ValueError("SQL delete query missing 'table'")
+
+            where = query.get("where") or {}
+            params: list[Any] = []
+            count_sql = f"SELECT COUNT(*) AS cnt FROM `{table}`"
+
+            if where:
+                conds: list[str] = []
+                for col, val in where.items():
+                    conds.append(f"`{col}` = %s")
+                    params.append(val)
+                count_sql += " WHERE " + " AND ".join(conds)
+
+            rows = mysql_client.fetch_all(count_sql, tuple(params) if params else None)
+            if not rows:
+                return 0
+            first = rows[0]
+            if isinstance(first, dict):
+                value = first.get("cnt")
+            else:
+                value = None
+            return int(value or 0)
+
+        def attempt_sql_fk_cascade(query: dict[str, Any]) -> bool:
+            table = query.get("table")
+            if not table:
+                return False
+
+            where = query.get("where") or {}
+            where_clause, where_params = build_sql_where_clause(where)
+            if not where_clause:
+                return False
+
+            fk_query = (
+                "SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_COLUMN_NAME "
+                "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND REFERENCED_TABLE_NAME = %s"
+            )
+            child_fks = mysql_client.fetch_all(fk_query, (table,))
+            if not child_fks:
+                return False
+
+            cascaded = False
+            for fk in child_fks:
+                child_table = fk.get("TABLE_NAME") if isinstance(fk, dict) else None
+                child_column = fk.get("COLUMN_NAME") if isinstance(fk, dict) else None
+                parent_column = fk.get("REFERENCED_COLUMN_NAME") if isinstance(fk, dict) else None
+                if not child_table or not child_column or not parent_column:
+                    continue
+
+                delete_child_sql = (
+                    f"DELETE FROM `{child_table}` "
+                    f"WHERE `{child_column}` IN ("
+                    f"SELECT `{parent_column}` FROM `{table}` WHERE {where_clause}"
+                    ")"
+                )
+                mysql_client.execute(delete_child_sql, tuple(where_params))
+                cascaded = True
+
+            return cascaded
+
+        def build_sql_nullify(query: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+            table = query.get("table")
+            if not table:
+                raise ValueError("SQL nullify query missing 'table'")
+
+            columns = list(query.get("columns") or [])
+            if not columns:
+                raise ValueError("SQL nullify query missing 'columns'")
+
+            where = query.get("where") or {}
+            params: list[Any] = []
+            set_clause = ", ".join(f"`{col}` = NULL" for col in columns)
+            sql = f"UPDATE `{table}` SET {set_clause}"
+
+            if where:
+                conds: list[str] = []
+                for col, val in where.items():
+                    conds.append(f"`{col}` = %s")
+                    params.append(val)
+                sql += " WHERE " + " AND ".join(conds)
+
+            return sql, tuple(params)
+
+        def run_mongo_delete(query: dict[str, Any]) -> int:
+            collection = query.get("collection")
+            if not collection:
+                raise ValueError("Mongo delete query missing 'collection'")
+
+            delete_filter = dict(query.get("filter") or {})
+            query_type = str(query.get("type") or "delete_many").lower()
+
+            if hasattr(mongo_client, "client") and getattr(mongo_client, "client", None) is not None:
+                db_name = getattr(mongo_client, "database", None)
+                if not db_name:
+                    raise ValueError("Mongo client missing database name")
+
+                db = mongo_client.client[db_name]
+                if collection == "*":
+                    deleted_total = 0
+                    for collection_name in db.list_collection_names():
+                        coll = db[collection_name]
+                        if query_type == "delete_one":
+                            result = coll.delete_one(delete_filter)
+                        else:
+                            result = coll.delete_many(delete_filter)
+                        deleted_total += int(getattr(result, "deleted_count", 0))
+                    return deleted_total
+
+                coll = db[collection]
+                if query_type == "delete_one":
+                    result = coll.delete_one(delete_filter)
+                else:
+                    result = coll.delete_many(delete_filter)
+                return int(getattr(result, "deleted_count", 0))
+
+            if query_type == "delete_one" and hasattr(mongo_client, "delete_one"):
+                result = mongo_client.delete_one(collection, delete_filter)
+                if isinstance(result, int):
+                    return result
+                return int(getattr(result, "deleted_count", 0))
+            if hasattr(mongo_client, "delete_many"):
+                result = mongo_client.delete_many(collection, delete_filter)
+                if isinstance(result, int):
+                    return result
+                return int(getattr(result, "deleted_count", 0))
+
+            raise ValueError("Mongo client does not support delete operations")
+
+        def run_mongo_unset(query: dict[str, Any]) -> int:
+            collection = query.get("collection")
+            if not collection:
+                raise ValueError("Mongo unset query missing 'collection'")
+
+            update_filter = dict(query.get("filter") or {})
+            unset_paths = list(query.get("unset_paths") or [])
+            if not unset_paths:
+                return 0
+            unset_doc = {path: "" for path in unset_paths}
+
+            if hasattr(mongo_client, "client") and getattr(mongo_client, "client", None) is not None:
+                db_name = getattr(mongo_client, "database", None)
+                if not db_name:
+                    raise ValueError("Mongo client missing database name")
+
+                db = mongo_client.client[db_name]
+                if collection == "*":
+                    modified_total = 0
+                    for collection_name in db.list_collection_names():
+                        coll = db[collection_name]
+                        result = coll.update_many(update_filter, {"$unset": unset_doc})
+                        modified_total += int(getattr(result, "modified_count", 0))
+                    return modified_total
+
+                coll = db[collection]
+                result = coll.update_many(update_filter, {"$unset": unset_doc})
+                return int(getattr(result, "modified_count", 0))
+
+            raise ValueError("Mongo client does not support unset operations")
+
+        # Execute SQL deletes in planned order (planner handles child-first sequencing).
+        sql_queries = list(plan.sql_queries or [])
+
+        for idx, query in enumerate(sql_queries):
+            if query.get("type") not in (None, "delete", "nullify"):
+                errors.append(
+                    f"SQL query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
+                )
+                continue
+            if mysql_client is None:
+                errors.append("SQL delete execution failed: mysql_client is not provided")
+                break
+
+            try:
+                affected = count_sql_rows(query)
+                if query.get("type") == "nullify":
+                    sql, params = build_sql_nullify(query)
+                else:
+                    sql, params = build_sql_delete(query)
+                mysql_client.execute(sql, params if params else None)
+                sql_deleted += affected
+            except Exception as exc:  # noqa: BLE001
+                recovered = False
+                if query.get("type") == "delete":
+                    try:
+                        cascaded = attempt_sql_fk_cascade(query)
+                        if cascaded:
+                            affected = count_sql_rows(query)
+                            sql, params = build_sql_delete(query)
+                            mysql_client.execute(sql, params if params else None)
+                            sql_deleted += affected
+                            recovered = True
+                    except Exception:  # noqa: BLE001
+                        recovered = False
+
+                if not recovered:
+                    errors.append(f"SQL query #{idx + 1} execution failed: {exc}")
+
+        for idx, query in enumerate(plan.mongo_queries or []):
+            if query.get("type") not in (None, "delete_many", "delete_one", "unset_many"):
+                errors.append(
+                    f"Mongo query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
+                )
+                continue
+            if mongo_client is None:
+                errors.append("Mongo delete execution failed: mongo_client is not provided")
+                break
+
+            try:
+                query_type = str(query.get("type") or "delete_many").lower()
+                if query_type == "unset_many":
+                    mongo_deleted += run_mongo_unset(query)
+                else:
+                    mongo_deleted += run_mongo_delete(query)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Mongo query #{idx + 1} execution failed: {exc}")
+
+        status = (
+            "partial_success"
+            if errors and (sql_deleted or mongo_deleted)
+            else ("error" if errors else "success")
+        )
+        return {
+            "status": status,
+            "operation": "delete",
+            "message": "Delete executed with warnings." if errors else "Delete executed successfully.",
+            "sql_deleted": sql_deleted,
+            "mongo_deleted": mongo_deleted,
+            "errors": errors,
+        }

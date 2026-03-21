@@ -422,14 +422,22 @@ class QueryPlanner:
             payload.get("filters") or payload.get("where") or {},
             field_index,
         )
-        target_fields = self._resolve_requested_fields(
+        join_keys = self._infer_join_keys(field_locations)
+        explicit_target_fields = self._resolve_requested_fields(
             list(payload.get("fields") or []),
             field_index,
         )
+        target_fields = list(explicit_target_fields)
         if not target_fields:
             target_fields = list(filters.keys())
 
         sql_where, mongo_filter = self._split_filters(filters, field_index)
+
+        scoped_prefixes = {
+            field.split(".", 1)[0]
+            for field in explicit_target_fields
+            if "." in field
+        }
 
         sql_targets: set[str] = set()
         mongo_targets: set[str] = set()
@@ -443,28 +451,194 @@ class QueryPlanner:
             if backend == "mongo":
                 mongo_targets.add(loc.table_or_collection)
 
+        all_mongo_collections = sorted(
+            {
+                loc.table_or_collection
+                for loc in field_locations
+                if loc.backend.lower() == "mongo"
+            }
+        )
+
+        cross_backend_filter = {
+            field: value
+            for field, value in filters.items()
+            if field in join_keys
+        }
+
         # If no target fields are given, use tables/collections referenced by filters.
         if not sql_targets and sql_where:
             sql_targets = set(sql_where.keys())
         if not mongo_targets and mongo_filter:
             mongo_targets = set(mongo_filter.keys())
+        if not explicit_target_fields and not mongo_targets and cross_backend_filter:
+            mongo_targets = set(all_mongo_collections)
 
-        sql_queries = [
-            {
-                "type": "delete",
-                "table": table,
-                "where": sql_where.get(table, {}),
-            }
-            for table in sorted(sql_targets)
-        ]
-        mongo_queries = [
-            {
-                "type": "delete_many",
-                "collection": collection,
-                "filter": mongo_filter.get(collection, {}),
-            }
-            for collection in sorted(mongo_targets)
-        ]
+        if explicit_target_fields:
+            scoped_sql_tables = sorted(
+                {
+                    loc.table_or_collection
+                    for loc in field_locations
+                    if loc.backend.lower() in ("sql", "both")
+                    and any(
+                        loc.table_or_collection == prefix
+                        or loc.table_or_collection.startswith(f"{prefix}_")
+                        or loc.field_path == prefix
+                        or loc.field_path.startswith(f"{prefix}.")
+                        for prefix in scoped_prefixes
+                    )
+                    and loc.table_or_collection not in {"event", "records"}
+                }
+            )
+
+            sql_queries = []
+            for table in scoped_sql_tables:
+                table_locations = [
+                    loc for loc in field_locations
+                    if loc.table_or_collection == table and loc.backend.lower() in ("sql", "both")
+                ]
+                table_columns = {
+                    loc.column_or_path
+                    for loc in table_locations
+                }
+                for loc in table_locations:
+                    table_columns.update(loc.join_keys)
+
+                table_where = dict(sql_where.get(table, {}))
+                if not table_where:
+                    table_where = {
+                        key: value
+                        for key, value in cross_backend_filter.items()
+                        if key in table_columns
+                    }
+
+                if table_where:
+                    sql_queries.append(
+                        {
+                            "type": "delete",
+                            "table": table,
+                            "where": table_where,
+                        }
+                    )
+        else:
+            sql_tables = sorted(
+                {
+                    loc.table_or_collection
+                    for loc in field_locations
+                    if loc.backend.lower() in ("sql", "both")
+                }
+            )
+
+            table_columns_map: dict[str, set[str]] = {}
+            table_join_keys_map: dict[str, set[str]] = {}
+            for table in sql_tables:
+                table_locations = [
+                    loc for loc in field_locations
+                    if loc.table_or_collection == table and loc.backend.lower() in ("sql", "both")
+                ]
+                table_columns_map[table] = {
+                    loc.column_or_path
+                    for loc in table_locations
+                }
+                table_join_keys_map[table] = {
+                    key
+                    for loc in table_locations
+                    for key in loc.join_keys
+                    if key
+                }
+
+            prioritized_sql_queries: list[dict[str, Any]] = []
+            for table in sql_tables:
+                table_columns = set(table_columns_map.get(table, set()))
+                table_columns.update(table_join_keys_map.get(table, set()))
+
+                table_where = dict(sql_where.get(table, {}))
+                if not table_where:
+                    table_where = {
+                        key: value
+                        for key, value in cross_backend_filter.items()
+                        if key in table_columns
+                    }
+
+                if not table_where:
+                    continue
+
+                priority = 1 if table in sql_targets else 0
+                prioritized_sql_queries.append(
+                    {
+                        "type": "delete",
+                        "table": table,
+                        "where": table_where,
+                        "priority": priority,
+                        "depth_hint": table.count("_"),
+                    }
+                )
+
+            sql_queries = [
+                {k: v for k, v in query.items() if k not in ("priority", "depth_hint")}
+                for query in sorted(
+                    prioritized_sql_queries,
+                    key=lambda q: (q["priority"], -q["depth_hint"], q["table"]),
+                )
+            ]
+        mongo_queries: list[dict[str, Any]] = []
+        if not explicit_target_fields:
+            mongo_queries = [
+                {
+                    "type": "delete_many",
+                    "collection": collection,
+                    "filter": mongo_filter.get(collection, {}) or dict(cross_backend_filter),
+                }
+                for collection in sorted(mongo_targets)
+            ]
+
+        if explicit_target_fields and cross_backend_filter:
+            scoped_filters = set(explicit_target_fields) | scoped_prefixes
+            scoped_collections = sorted(
+                {
+                    loc.table_or_collection
+                    for loc in field_locations
+                    if loc.backend.lower() == "mongo"
+                    and any(
+                        loc.field_path == scope or loc.field_path.startswith(f"{scope}.")
+                        for scope in scoped_filters
+                    )
+                }
+            )
+
+            for collection in scoped_collections:
+                mongo_queries.append(
+                    {
+                        "type": "delete_many",
+                        "collection": collection,
+                        "filter": mongo_filter.get(collection, {}) or dict(cross_backend_filter),
+                    }
+                )
+
+            unset_paths: set[str] = set()
+            for field in explicit_target_fields:
+                if "." in field:
+                    unset_paths.add(field.split(".", 1)[0])
+                else:
+                    unset_paths.add(field)
+
+            if unset_paths:
+                mongo_queries.append(
+                    {
+                        "type": "unset_many",
+                        "collection": "*",
+                        "filter": dict(cross_backend_filter),
+                        "unset_paths": sorted(unset_paths),
+                    }
+                )
+
+        if cross_backend_filter and not explicit_target_fields:
+            mongo_queries.append(
+                {
+                    "type": "delete_many",
+                    "collection": "*",
+                    "filter": dict(cross_backend_filter),
+                }
+            )
 
         return QueryPlan(
             operation=CrudOperation.DELETE,
