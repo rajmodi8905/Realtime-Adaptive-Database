@@ -133,9 +133,28 @@ class MongoDecompositionEngine:
         plan = CollectionPlan(collection_name=root_collection)
         verdicts: list[_FieldVerdict] = []
 
+        # Collect all MongoDB-bound array paths so we can skip their
+        # children — those are implicitly embedded inside the parent
+        # array's documents and should not be evaluated independently.
+        mongo_array_paths: set[str] = {
+            cf.field_path
+            for cf in classified_fields
+            if cf.backend.upper() in MONGO_BACKENDS
+            and (cf.is_array or cf.canonical_type == "array")
+        }
+
         for cf in classified_fields:
             if cf.backend.upper() not in MONGO_BACKENDS:
                 logger.debug("Skipping non-Mongo field: %s (backend=%s)", cf.field_path, cf.backend)
+                continue
+
+            # Skip children of a MongoDB-bound array — they are part of
+            # the parent array's document structure, not standalone fields.
+            if self._is_child_of_array(cf.field_path, mongo_array_paths):
+                logger.debug(
+                    "Skipping child-of-array field: %s (parent array is MongoDB-bound)",
+                    cf.field_path,
+                )
                 continue
 
             verdict = self._apply_heuristics(cf)
@@ -397,6 +416,16 @@ class MongoDecompositionEngine:
     # ------------------------------------------------------------------
     # Utility helpers (private)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_child_of_array(field_path: str, array_paths: set[str]) -> bool:
+        """Return True if *field_path* is a descendant of any path in *array_paths*."""
+        parts = field_path.split(".")
+        for i in range(1, len(parts)):
+            ancestor = ".".join(parts[:i])
+            if ancestor in array_paths:
+                return True
+        return False
 
     @staticmethod
     def _derive_collection_name(entity_name: str) -> str:
