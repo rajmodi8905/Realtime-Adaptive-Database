@@ -20,19 +20,33 @@ class StorageStrategyGenerator:
         """Generate final field-level storage map."""
         field_locations: list[FieldLocation] = []
 
+        sql_entity_paths = self._build_sql_entity_paths(
+            registration.root_entity,
+            sql_relationships,
+        )
+
         # Process SQL tables and relationships
         for table in sql_tables:
             foreign_keys = [fk['column'] for fk in table.foreign_keys]
+            entity_path = sql_entity_paths.get(
+                table.table_name,
+                "" if table.table_name == registration.root_entity else table.table_name,
+            )
             for column in table.columns:
                 is_foreign_key = column in foreign_keys
+                logical_field_path = self._derive_sql_field_path(
+                    entity_path=entity_path,
+                    column=column,
+                    is_foreign_key=is_foreign_key,
+                )
                 join_keys = [table.primary_key] if not is_foreign_key else []
                 normalized_join_keys = self._normalize_join_keys(
                     join_keys + [fk['column'] for fk in table.foreign_keys],
-                    field_path=column,
+                    field_path=logical_field_path,
                     column_or_path=column,
                 )
                 field_locations.append(FieldLocation(
-                    field_path=column,
+                    field_path=logical_field_path,
                     backend="sql",
                     table_or_collection=table.table_name,
                     column_or_path=column,
@@ -246,3 +260,34 @@ class StorageStrategyGenerator:
             normalized.append(key)
 
         return normalized
+
+    @staticmethod
+    def _build_sql_entity_paths(
+        root_entity: str,
+        sql_relationships: list[RelationshipPlan],
+    ) -> dict[str, str]:
+        """Map SQL table names to logical JSON entity paths."""
+        entity_paths: dict[str, str] = {root_entity: ""}
+        for relationship in sql_relationships:
+            source_path = (relationship.source_path or "").strip()
+            if not source_path:
+                continue
+            entity_paths.setdefault(relationship.child_table, source_path)
+        return entity_paths
+
+    @staticmethod
+    def _derive_sql_field_path(
+        entity_path: str,
+        column: str,
+        is_foreign_key: bool,
+    ) -> str:
+        """Build a logical JSON field path for a SQL column.
+
+        Root-table and FK columns keep plain logical names for linking.
+        Child-table non-FK attributes are namespaced by entity path.
+        """
+        if is_foreign_key or not entity_path:
+            return column
+        if column.startswith(f"{entity_path}."):
+            return column
+        return f"{entity_path}.{column}"
