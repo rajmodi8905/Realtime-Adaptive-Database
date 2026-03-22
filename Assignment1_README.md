@@ -148,9 +148,15 @@ Applies heuristic rules to produce `PlacementDecision` for each field:
 | Rule | Condition | Backend |
 |------|-----------|---------|
 | 1 | Field is `username`, `sys_ingested_at`, or `t_stamp` | **BOTH** |
-| 2 | Value is nested (dict or list) | **MongoDB** |
-| 3 | `presence_ratio ≥ 70%` AND `type_stability ≥ 90%` | **SQL** |
-| 4 | Everything else | **MongoDB** |
+| 2 | Field type is `array` and `presence_ratio < 70%` | **MongoDB** |
+| 3 | Field type is `array` and elements are scalar/flat objects | **SQL** (normalized child table) |
+| 4 | Field type is `array` and elements are nested/mixed/unknown | **MongoDB** |
+| 5 | Field type is `object` | **MongoDB** |
+| 6 | Scalar field with `presence_ratio ≥ 70%` AND `type_stability ≥ 90%` | **SQL** |
+| 7 | Everything else | **MongoDB** |
+
+**Array post-processing rule**:
+- If an ancestor array path is classified as MongoDB, any SQL/BOTH child field under that array is automatically demoted to **MongoDB** to avoid orphaned SQL structures without a valid FK path.
 
 **SQL Type Mapping**:
 
