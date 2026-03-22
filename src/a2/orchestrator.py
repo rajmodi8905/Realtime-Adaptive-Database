@@ -1,9 +1,16 @@
-from typing import Optional
+from __future__ import annotations
+
+import logging
+import random
+import string
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from src.ingest_and_classify import IngestAndClassify
 from src.config import AppConfig, get_config
 
-from .contracts import ClassifiedField, CrudOperation, QueryPlan, SchemaRegistration
+from .contracts import ClassifiedField, CrudOperation, FieldLocation, QueryPlan, SchemaRegistration
 from .crud_engine import CrudEngine
 from .metadata_catalog import MetadataCatalog
 from .mongo_decomposition_engine import MongoDecompositionEngine
@@ -11,6 +18,8 @@ from .query_planner import QueryPlanner
 from .schema_registry import SchemaRegistry
 from .sql_normalization_engine import SqlNormalizationEngine
 from .storage_strategy_generator import StorageStrategyGenerator
+
+logger = logging.getLogger(__name__)
 
 
 class Assignment2Pipeline:
@@ -53,13 +62,30 @@ class Assignment2Pipeline:
 
         # Classification bridge — populated after ingestion
         self._classified_fields: list[ClassifiedField] = []
+        # Registration — populated after register_schema
+        self._registration: Optional[SchemaRegistration] = None
+        # Cached field locations — populated after build_storage_strategy
+        self._field_locations: list[FieldLocation] = []
 
     # ------------------------------------------------------------------
     # Phase 1: Schema Registration
     # ------------------------------------------------------------------
     def register_schema(self, registration: SchemaRegistration) -> dict:
         """Register schema and persist in metadata catalog."""
-        raise NotImplementedError("Implement schema registration orchestration")
+        self._registration = registration
+        self.metadata_catalog.save_schema(registration)
+        logger.info(
+            "Schema '%s' v%s registered (root_entity=%s)",
+            registration.schema_name,
+            registration.version,
+            registration.root_entity,
+        )
+        return {
+            "status": "registered",
+            "schema_name": registration.schema_name,
+            "version": registration.version,
+            "root_entity": registration.root_entity,
+        }
 
     # ------------------------------------------------------------------
     # Phase 2-4: Ingestion + Classification (delegated to A1)
@@ -112,22 +138,215 @@ class Assignment2Pipeline:
     def build_storage_strategy(self, registration: SchemaRegistration) -> dict:
         """Generate SQL/Mongo strategy using A1 classification output.
 
-        The classified_fields carry nesting info from A1 so the engines
-        can detect repeating groups (SQL) and embedding vs referencing
-        (MongoDB) without re-running classification.
+        End-to-end flow:
+        1. Generate SQL table plans + relationships from classified fields.
+        2. Execute SQL DDL (CREATE TABLE) on MySQL.
+        3. Generate Mongo collection plans from classified fields.
+        4. Execute Mongo collection setup.
+        5. Generate field-level storage locations.
+        6. Persist all plans + locations via metadata catalog.
+
+        Args:
+            registration: The schema registration to use.
+
+        Returns:
+            Summary dict with counts and any errors.
         """
-        raise NotImplementedError("Implement strategy generation orchestration")
+        self._registration = registration
+        classified = self._classified_fields
+        if not classified:
+            return {"status": "error", "message": "No classified fields. Run run_ingestion() first."}
+
+        errors: list[str] = []
+
+        # ── SQL normalization ──────────────────────────────────────────
+        sql_tables = self.sql_engine.generate_table_plans(registration, classified)
+        sql_relationships = self.sql_engine.generate_relationships(sql_tables)
+        logger.info(
+            "SQL plan: %d tables, %d relationships",
+            len(sql_tables), len(sql_relationships),
+        )
+
+        sql_exec_result = self.sql_engine.execute_table_plans(
+            sql_tables, sql_relationships, self.a1_pipeline._mysql_client,
+        )
+        if sql_exec_result.get("errors"):
+            errors.extend(sql_exec_result["errors"])
+
+        # ── MongoDB decomposition ──────────────────────────────────────
+        sql_root_pk = next(
+            (t.primary_key for t in sql_tables if t.table_name == registration.root_entity),
+            None,
+        )
+        mongo_collections = self.mongo_engine.generate_collection_plans(
+            registration, classified, sql_root_pk,
+        )
+        logger.info("Mongo plan: %d collections", len(mongo_collections))
+
+        mongo_exec_result = self.mongo_engine.execute_collection_plans(
+            mongo_collections, self.a1_pipeline._mongo_client,
+        )
+        if mongo_exec_result.get("errors"):
+            errors.extend(mongo_exec_result["errors"])
+
+        # ── Field locations ────────────────────────────────────────────
+        field_locations = self.strategy_generator.generate_field_locations(
+            registration, sql_tables, sql_relationships, mongo_collections,
+        )
+        self._field_locations = field_locations
+        logger.info("Field locations: %d mappings", len(field_locations))
+
+        # ── Persist everything ─────────────────────────────────────────
+        self.metadata_catalog.save_schema(registration)
+        self.metadata_catalog.save_sql_plan(sql_tables, sql_relationships)
+        self.metadata_catalog.save_mongo_plan(mongo_collections)
+        self.metadata_catalog.save_field_locations(field_locations)
+
+        status = "success" if not errors else "partial_success"
+        return {
+            "status": status,
+            "sql_tables": len(sql_tables),
+            "sql_relationships": len(sql_relationships),
+            "mongo_collections": len(mongo_collections),
+            "field_locations": len(field_locations),
+            "errors": errors,
+        }
 
     # ------------------------------------------------------------------
     # Phase 6: Metadata-Driven CRUD
     # ------------------------------------------------------------------
     def execute_operation(self, operation: CrudOperation, payload: dict) -> dict:
-        """Generate and execute metadata-driven CRUD plan."""
-        raise NotImplementedError("Implement operation planning + execution")
+        """Generate and execute metadata-driven CRUD plan.
+
+        Args:
+            operation: The CRUD operation (READ, CREATE, UPDATE, DELETE).
+            payload: Operation-specific payload (filters, records, updates, etc.)
+
+        Returns:
+            Unified result dict from CrudEngine.
+        """
+        field_locations = self._get_field_locations()
+        plan = self.query_planner.build_plan(operation, payload, field_locations)
+        return self.crud_engine.execute(
+            plan,
+            mysql_client=self.a1_pipeline._mysql_client,
+            mongo_client=self.a1_pipeline._mongo_client,
+        )
 
     def preview_plan(self, operation: CrudOperation, payload: dict) -> QueryPlan:
         """Return generated plan without execution, useful for debugging/reporting."""
-        raise NotImplementedError("Implement query plan preview")
+        field_locations = self._get_field_locations()
+        return self.query_planner.build_plan(operation, payload, field_locations)
+
+    def _get_field_locations(self) -> list[FieldLocation]:
+        """Load field locations from cache or metadata catalog."""
+        if self._field_locations:
+            return self._field_locations
+        self._field_locations = self.metadata_catalog.get_field_locations()
+        return self._field_locations
+
+    # ------------------------------------------------------------------
+    # Record Generator
+    # ------------------------------------------------------------------
+    def generate_records(
+        self,
+        n: int,
+        registration: Optional[SchemaRegistration] = None,
+    ) -> list[dict]:
+        """Generate *n* synthetic records conforming to the registered schema.
+
+        Walks the ``json_schema.properties`` to produce records whose
+        structure matches the schema exactly.  Values are randomised but
+        type-correct so the records survive classification and CRUD
+        round-trips.
+
+        Args:
+            n: Number of records to generate.
+            registration: Schema to use.  Falls back to the previously
+                          registered schema if omitted.
+
+        Returns:
+            A list of *n* dicts ready for ``run_ingestion()``.
+        """
+        reg = registration or self._registration
+        if reg is None or not reg.json_schema:
+            raise ValueError(
+                "No schema available. Call register_schema() first or pass a registration."
+            )
+        schema = reg.json_schema
+        records: list[dict] = []
+        for i in range(n):
+            record = self._generate_from_schema(schema, record_index=i)
+            records.append(record)
+        return records
+
+    # ── recursive schema walker ────────────────────────────────────────
+
+    @staticmethod
+    def _generate_from_schema(
+        schema: dict[str, Any],
+        record_index: int = 0,
+        path: str = "",
+    ) -> Any:
+        """Recursively generate a value conforming to *schema*."""
+        schema_type = schema.get("type", "string")
+
+        if schema_type == "object":
+            obj: dict[str, Any] = {}
+            for prop_name, prop_schema in (schema.get("properties") or {}).items():
+                child_path = f"{path}.{prop_name}" if path else prop_name
+                obj[prop_name] = Assignment2Pipeline._generate_from_schema(
+                    prop_schema, record_index, child_path,
+                )
+            return obj
+
+        if schema_type == "array":
+            items_schema = schema.get("items", {"type": "string"})
+            count = random.randint(1, 3)
+            return [
+                Assignment2Pipeline._generate_from_schema(
+                    items_schema, record_index, f"{path}[{j}]",
+                )
+                for j in range(count)
+            ]
+
+        # ── scalar types ───────────────────────────────────────────────
+        return Assignment2Pipeline._generate_scalar(schema_type, schema, record_index, path)
+
+    @staticmethod
+    def _generate_scalar(
+        schema_type: str,
+        schema: dict[str, Any],
+        record_index: int,
+        path: str,
+    ) -> Any:
+        """Generate a single scalar value."""
+        leaf = path.rsplit(".", 1)[-1].rstrip("]").split("[")[0] if path else "val"
+
+        # IDs → unique per record
+        if leaf.endswith("_id") or leaf in ("id", "username"):
+            return f"{leaf}_{record_index + 1}"
+
+        if schema_type == "integer":
+            return random.randint(1, 100)
+
+        if schema_type == "number":
+            return round(random.uniform(0.1, 100.0), 2)
+
+        if schema_type == "boolean":
+            return random.choice([True, False])
+
+        # string with date-time format → ISO timestamp
+        fmt = schema.get("format", "")
+        if fmt == "date-time" or "time" in leaf.lower() or "date" in leaf.lower():
+            base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            offset_secs = record_index * 60 + random.randint(0, 59)
+            ts = datetime.fromtimestamp(base.timestamp() + offset_secs, tz=timezone.utc)
+            return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # generic string
+        suffix = "".join(random.choices(string.ascii_lowercase, k=4))
+        return f"{leaf}_{suffix}_{record_index + 1}"
 
     # ------------------------------------------------------------------
     # Lifecycle
