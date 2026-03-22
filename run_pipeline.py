@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -29,6 +30,44 @@ def load_registration(schema_path: Path) -> SchemaRegistration:
         json_schema=data["json_schema"],
         constraints=data.get("constraints", {}),
     )
+
+
+def enrich_records(records: list[dict]) -> list[dict]:
+    """Add extra nested structures to generated records.
+
+    - post.attachments: array of flat objects → creates an additional SQL child table
+    - device.sensors: array of objects with nested readings array → creates an additional MongoDB collection
+    """
+    for i, record in enumerate(records):
+        eid = record.get("event_id", f"e{i}")
+        did = record.get("device", {}).get("device_id", f"d{i}")
+
+        # Flat array of simple objects → SQL child table (post_attachments)
+        record["post"]["attachments"] = [
+            {"attachment_id": f"att_{eid}_1", "file_type": "image"},
+            {"attachment_id": f"att_{eid}_2", "file_type": "video"},
+        ]
+
+        # Deeply nested array (objects containing sub-arrays) → MongoDB collection
+        record["device"]["sensors"] = [
+            {
+                "sensor_id": f"sen_{did}_1",
+                "type": "temperature",
+                "readings": [
+                    {"timestamp": record.get("timestamp", ""), "value": round(random.uniform(20, 40), 1)},
+                    {"timestamp": record.get("timestamp", ""), "value": round(random.uniform(20, 40), 1)},
+                ],
+            },
+            {
+                "sensor_id": f"sen_{did}_2",
+                "type": "humidity",
+                "readings": [
+                    {"timestamp": record.get("timestamp", ""), "value": round(random.uniform(30, 90), 1)},
+                ],
+            },
+        ]
+
+    return records
 
 
 def cleanup_stale_records_collection(pipeline: Assignment2Pipeline) -> None:
@@ -77,6 +116,7 @@ def main() -> int:
         # ── Phase 2: Generate + ingest records ────────────────────────
         print(f"Generating {args.records} synthetic records")
         records = pipeline.generate_records(args.records, registration)
+        records = enrich_records(records)
         print(f"Ingesting {len(records)} records")
         flush_result = pipeline.run_ingestion(records)
         classified = pipeline.get_classified_fields()
@@ -117,7 +157,7 @@ def main() -> int:
         read_result = pipeline.execute_operation(
             CrudOperation.READ,
             {
-                "fields": ["username", "event_id", "post.title"],
+                "fields": ["username", "event_id", "title"],
                 "filters": {"username": first_user},
                 "limit": 10,
             },
@@ -135,11 +175,11 @@ def main() -> int:
         # ── Phase 6: UPDATE ───────────────────────────────────────────
         updated_title = "updated_pipeline_title"
         first_event = records[0]["event_id"]
-        print(f"Updating post.title for username='{first_user}', event_id='{first_event}'")
+        print(f"Updating title for username='{first_user}', event_id='{first_event}'")
         update_result = pipeline.execute_operation(
             CrudOperation.UPDATE,
             {
-                "updates": {"post.title": updated_title},
+                "updates": {"title": updated_title},
                 "filters": {
                     "username": first_user,
                     "event_id": first_event,
@@ -159,7 +199,7 @@ def main() -> int:
         verify_read = pipeline.execute_operation(
             CrudOperation.READ,
             {
-                "fields": ["username", "event_id", "post.title"],
+                "fields": ["username", "event_id", "title"],
                 "filters": {"username": first_user, "event_id": first_event},
                 "limit": 1,
             },
