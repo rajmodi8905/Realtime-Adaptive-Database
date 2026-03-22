@@ -2,6 +2,8 @@
 
 A schema-aware extension of the A1 adaptive framework that automatically normalizes data into **SQL tables** and **MongoDB collections**, then provides **metadata-driven CRUD** across both backends - users query using simple JSON payloads without knowing which backend stores what.
 
+Video explanation: [Watch here](https://drive.google.com/file/d/1kc24Cd8-Kcc7NmE76cIpBPlsq8I_Xqhz/view?usp=sharing)
+
 ---
 
 ## How A1 Fits In (Brief Context)
