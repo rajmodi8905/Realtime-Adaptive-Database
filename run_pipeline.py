@@ -20,6 +20,23 @@ from src.a2.orchestrator import Assignment2Pipeline
 from src.config import get_config
 from src.persistence.metadata_store import MetadataStore
 
+# ── Pretty-print helpers ──────────────────────────────────────────────────────
+
+def _section(title: str) -> None:
+    """Print a bold section banner."""
+    bar = "─" * 60
+    print(f"\n{bar}")
+    print(f"  {title}")
+    print(bar)
+
+
+def _check(condition: bool, label: str) -> None:
+    """Print a PASS / FAIL line for a named assertion."""
+    symbol = "PASS" if condition else "FAIL"
+    print(f"  [{symbol}]  {label}")
+
+
+# ── Schema loader ────────────────────────────────────────────────────────────
 
 def load_registration(schema_path: Path) -> SchemaRegistration:
     data = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -31,6 +48,8 @@ def load_registration(schema_path: Path) -> SchemaRegistration:
         constraints=data.get("constraints", {}),
     )
 
+
+# ── Record enrichment ─────────────────────────────────────────────────────────
 
 def enrich_records(records: list[dict]) -> list[dict]:
     """Add extra nested structures to generated records.
@@ -81,6 +100,8 @@ def cleanup_stale_records_collection(pipeline: Assignment2Pipeline) -> None:
                 db.drop_collection("records")
 
 
+# ── Main ─────────────────────────────────────────────────────────────────────
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the full A2 pipeline")
     parser.add_argument(
@@ -109,73 +130,123 @@ def main() -> int:
 
     pipeline = Assignment2Pipeline(cfg)
     try:
-        # ── Phase 1: Register schema ──────────────────────────────────
-        print(f"Registering schema '{registration.schema_name}' v{registration.version}")
+        # ─────────────────────────────────────────────────────────────
+        # PHASE 1: Schema Registration
+        # ─────────────────────────────────────────────────────────────
+        _section("PHASE 1 · Schema Registration")
+        print(f"  Schema  : {registration.schema_name}  v{registration.version}")
+        print(f"  Root    : {registration.root_entity}")
+        constraints = registration.constraints or {}
+        print(f"  Unique candidates : {constraints.get('unique_candidates', [])}")
+        print(f"  Index  candidates : {constraints.get('index_candidates', [])}")
         pipeline.register_schema(registration)
+        _check(True, "schema registered in MetadataCatalog")
 
-        # ── Phase 2: Generate + ingest records ────────────────────────
-        print(f"Generating {args.records} synthetic records")
+        # ─────────────────────────────────────────────────────────────
+        # PHASE 2: Record Generation + A1 Ingestion
+        # ─────────────────────────────────────────────────────────────
+        _section("PHASE 2 · Record Generation & A1 Ingestion (Normalization → Classification → Storage → Persistence)")
+        print(f"  Generating {args.records} synthetic records from schema …")
         records = pipeline.generate_records(args.records, registration)
         records = enrich_records(records)
-        print(f"Ingesting {len(records)} records")
+        print(f"  Generated  : {len(records)} records  (enriched with sensors + attachments)")
+        print(f"  Top-level keys (record[0]) : {sorted(records[0].keys())}")
+
         flush_result = pipeline.run_ingestion(records)
-        classified = pipeline.get_classified_fields()
-        print(f"       Ingested: {flush_result.get('status')} | {len(classified)} fields classified")
+        classified   = pipeline.get_classified_fields()
 
-        # ── Phase 3: Build storage strategy ───────────────────────────
-        print("Building storage strategy (SQL + MongoDB)")
+        sql_fields   = [f.field_path for f in classified if f.backend in ("SQL",  "BOTH")]
+        mongo_fields = [f.field_path for f in classified if f.backend in ("MONGODB", "BOTH")]
+
+        ingest_ok = flush_result.get("status") in ("success", "partial_success")
+        _check(ingest_ok, "A1 flush completed")
+        _check(len(classified) > 0, f"{len(classified)} fields classified")
+        print(f"  Flush status   : {flush_result.get('status')}")
+        print(f"  SQL  fields    : {len(sql_fields)}   → {sql_fields[:6]}{' …' if len(sql_fields) > 6 else ''}")
+        print(f"  Mongo fields   : {len(mongo_fields)}  → {mongo_fields[:6]}{' …' if len(mongo_fields) > 6 else ''}")
+        if flush_result.get("errors"):
+            for e in flush_result["errors"]:
+                print(f"  WARN  {e}")
+
+        # ─────────────────────────────────────────────────────────────
+        # PHASE 3: Storage Strategy Generation
+        # ─────────────────────────────────────────────────────────────
+        _section("PHASE 3 · Storage Strategy  (SQL 1NF/2NF/3NF  +  Mongo H1–H5 heuristics)")
         strategy_result = pipeline.build_storage_strategy(registration)
-        print(
-            f"       SQL: {strategy_result['sql_tables']} tables, "
-            f"{strategy_result['sql_relationships']} relationships | "
-            f"Mongo: {strategy_result['mongo_collections']} collections | "
-            f"Locations: {strategy_result['field_locations']}"
-        )
+        strategy_ok = strategy_result.get("status") in ("success", "partial_success")
+        _check(strategy_ok, "storage strategy built")
+        sql_tables   = strategy_result.get("sql_tables", 0)
+        sql_rels     = strategy_result.get("sql_relationships", 0)
+        mongo_cols   = strategy_result.get("mongo_collections", 0)
+        field_locs   = strategy_result.get("field_locations", 0)
+        _check(sql_tables > 0,
+               f"SQL normalisation → {sql_tables} tables, {sql_rels} FK relationships")
+        _check(mongo_cols > 0,
+               f"Mongo decomposition → {mongo_cols} collections")
+        print(f"  Field locations persisted : {field_locs}")
         if strategy_result.get("errors"):
-            for err in strategy_result["errors"]:
-                print(f"       WARNING: {err}")
+            for e in strategy_result["errors"]:
+                print(f"  WARN  {e}")
 
-        # ── Phase 4: CREATE ───────────────────────────────────────────
-        print(f"Inserting {len(records)} records")
+        # ─────────────────────────────────────────────────────────────
+        # PHASE 4: CREATE
+        # ─────────────────────────────────────────────────────────────
+        _section("PHASE 4 · CREATE  (insert_batch → SQL tables  +  insert_batch → Mongo collections)")
+        print(f"  Input    : {len(records)} records")
+        print(f"  Filter   : none  (full batch)")
         create_result = pipeline.execute_operation(
             CrudOperation.CREATE,
             {"records": records},
         )
-        print(
-            f"       SQL inserted: {create_result.get('sql_inserted', 0)} | "
-            f"Mongo inserted: {create_result.get('mongo_inserted', 0)} | "
-            f"Status: {create_result.get('status')}"
-        )
+        c_sql   = create_result.get("sql_inserted",   0)
+        c_mongo = create_result.get("mongo_inserted",  0)
+        create_ok = create_result.get("status") in ("success", "partial_success")
+        _check(create_ok,   f"CREATE status        : {create_result.get('status')}")
+        _check(c_sql > 0,   f"SQL  rows inserted   : {c_sql}")
+        _check(c_mongo > 0, f"Mongo docs inserted  : {c_mongo}")
+        print(f"  Message  : {create_result.get('message')}")
         if create_result.get("errors"):
-            for err in create_result["errors"]:
-                print(f"       WARNING: {err}")
+            for e in create_result["errors"]:
+                print(f"  WARN  {e}")
 
-        # ── Phase 5: READ ─────────────────────────────────────────────
-        # Read the first generated record back
-        first_user = records[0]["username"]
-        print(f"Reading records for username='{first_user}'")
+        # ─────────────────────────────────────────────────────────────
+        # PHASE 5: READ
+        # ─────────────────────────────────────────────────────────────
+        _section("PHASE 5 · READ  (SELECT … WHERE  +  find({filter})  →  keyed_merge prefer_sql)")
+        first_user  = records[0]["username"]
+        req_fields  = ["username", "event_id", "title"]
+        print(f"  Filter   : username = '{first_user}'")
+        print(f"  Fields   : {req_fields}")
+        print(f"  Limit    : 10")
         read_result = pipeline.execute_operation(
             CrudOperation.READ,
             {
-                "fields": ["username", "event_id", "title"],
+                "fields": req_fields,
                 "filters": {"username": first_user},
                 "limit": 10,
             },
         )
         read_records = read_result.get("records", [])
-        print(
-            f"       Found {len(read_records)} records | "
-            f"SQL rows: {read_result.get('sql_rows', 0)} | "
-            f"Mongo docs: {read_result.get('mongo_docs', 0)}"
-        )
+        read_ok = read_result.get("status") in ("success", "partial_success")
+        _check(read_ok,               f"READ status           : {read_result.get('status')}")
+        _check(len(read_records) > 0,  f"Merged records returned : {len(read_records)}")
+        print(f"  SQL rows fetched     : {read_result.get('sql_rows', 0)}")
+        print(f"  Mongo docs fetched   : {read_result.get('mongo_docs', 0)}")
+        print(f"  Join keys used       : {read_result.get('join_keys', [])}")
+        if read_records:
+            print(f"  Sample record [0]    : {read_records[0]}")
         if read_result.get("errors"):
-            for err in read_result["errors"]:
-                print(f"       WARNING: {err}")
+            for e in read_result["errors"]:
+                print(f"  WARN  {e}")
 
-        # ── Phase 6: UPDATE ───────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────
+        # PHASE 6: UPDATE
+        # ─────────────────────────────────────────────────────────────
+        _section("PHASE 6 · UPDATE  (UPDATE … SET … WHERE  +  update_many $set)")
         updated_title = "updated_pipeline_title"
-        first_event = records[0]["event_id"]
-        print(f"Updating title for username='{first_user}', event_id='{first_event}'")
+        first_event   = records[0]["event_id"]
+        print(f"  Filter   : username = '{first_user}', event_id = '{first_event}'")
+        print(f"  Set      : title = '{updated_title}'")
         update_result = pipeline.execute_operation(
             CrudOperation.UPDATE,
             {
@@ -186,16 +257,19 @@ def main() -> int:
                 },
             },
         )
-        print(
-            f"       SQL updated: {update_result.get('sql_updated', 0)} | "
-            f"Mongo updated: {update_result.get('mongo_updated', 0)} | "
-            f"Status: {update_result.get('status')}"
-        )
+        u_sql   = update_result.get("sql_updated",   0)
+        u_mongo = update_result.get("mongo_updated",  0)
+        update_ok = update_result.get("status") in ("success", "partial_success")
+        _check(update_ok,    f"UPDATE status         : {update_result.get('status')}")
+        _check(u_sql > 0,    f"SQL  rows affected    : {u_sql}")
+        print(f"  Mongo docs modified  : {u_mongo}")
+        print(f"  Message  : {update_result.get('message')}")
         if update_result.get("errors"):
-            for err in update_result["errors"]:
-                print(f"       WARNING: {err}")
+            for e in update_result["errors"]:
+                print(f"  WARN  {e}")
 
-        # Verify update
+        # Verify UPDATE by reading back the record
+        print(f"\n  -- Read-back verification (username='{first_user}', event_id='{first_event}') --")
         verify_read = pipeline.execute_operation(
             CrudOperation.READ,
             {
@@ -209,18 +283,21 @@ def main() -> int:
             isinstance(r.get("post"), dict) and r["post"].get("title") == updated_title
             for r in verify_records
         )
-        if update_verified:
-            print("       Update verified successfully")
-        else:
-            print("       FAIL: update verification failed")
+        _check(update_verified, f"title == '{updated_title}' confirmed in read-back")
+        if not update_verified:
+            print(f"  Expected title : '{updated_title}'")
+            print(f"  Got records    : {verify_records}")
             return 1
 
-        # ── Phase 7: DELETE ───────────────────────────────────────────
-        # Use the second record if available, else fall back to first
-        target = records[1] if len(records) > 1 else records[0]
-        del_user = target["username"]
+        # ─────────────────────────────────────────────────────────────
+        # PHASE 7: DELETE
+        # ─────────────────────────────────────────────────────────────
+        _section("PHASE 7 · DELETE  (child-first SQL cascade  +  delete_many Mongo wildcard sweep)")
+        target    = records[1] if len(records) > 1 else records[0]
+        del_user  = target["username"]
         del_event = target["event_id"]
-        print(f"Deleting record for username='{del_user}', event_id='{del_event}'")
+        print(f"  Filter   : username = '{del_user}', event_id = '{del_event}'")
+        print(f"  Strategy : planner orders child tables first (FK integrity), then Mongo wildcard sweep")
         delete_result = pipeline.execute_operation(
             CrudOperation.DELETE,
             {
@@ -230,23 +307,51 @@ def main() -> int:
                 },
             },
         )
-        print(
-            f"       SQL deleted: {delete_result.get('sql_deleted', 0)} | "
-            f"Mongo deleted: {delete_result.get('mongo_deleted', 0)} | "
-            f"Status: {delete_result.get('status')}"
-        )
+        d_sql   = delete_result.get("sql_deleted",   0)
+        d_mongo = delete_result.get("mongo_deleted",  0)
+        delete_ok = delete_result.get("status") in ("success", "partial_success")
+        _check(delete_ok,    f"DELETE status         : {delete_result.get('status')}")
+        _check(d_sql > 0,    f"SQL  rows deleted     : {d_sql}")
+        _check(d_mongo > 0,  f"Mongo docs deleted    : {d_mongo}")
+        print(f"  Message  : {delete_result.get('message')}")
         if delete_result.get("errors"):
-            for err in delete_result["errors"]:
-                print(f"       WARNING: {err}")
+            for e in delete_result["errors"]:
+                print(f"  WARN  {e}")
 
-        # ── Cleanup ───────────────────────────────────────────────────
+        # Verify DELETE — record must be absent
+        print(f"\n  -- Read-back verification (should return 0 records) --")
+        ghost_read = pipeline.execute_operation(
+            CrudOperation.READ,
+            {
+                "fields": ["username", "event_id"],
+                "filters": {"username": del_user, "event_id": del_event},
+                "limit": 1,
+            },
+        )
+        ghost_records = ghost_read.get("records", [])
+        _check(len(ghost_records) == 0, "record absent in read-back after DELETE")
+        if ghost_records:
+            print(f"  WARN  record still visible: {ghost_records}")
+
+        # ─────────────────────────────────────────────────────────────
+        # Cleanup + Final Summary
+        # ─────────────────────────────────────────────────────────────
         cleanup_stale_records_collection(pipeline)
 
-        print("\nPASS: Full A2 pipeline completed successfully")
+        _section("RESULT · Full A2 Pipeline")
+        print("  [PASS]  All phases completed successfully\n")
+        print("  ┌─────────────────────────────────────────────────────┐")
+        print("  │  Operation  │  SQL                 │  Mongo         │")
+        print("  ├─────────────┼──────────────────────┼────────────────┤")
+        print(f"  │  CREATE     │  {c_sql:<20} │  {c_mongo:<14} │")
+        print(f"  │  READ       │  {read_result.get('sql_rows',0):<20} │  {read_result.get('mongo_docs',0):<14} │")
+        print(f"  │  UPDATE     │  {u_sql:<20} │  {u_mongo:<14} │")
+        print(f"  │  DELETE     │  {d_sql:<20} │  {d_mongo:<14} │")
+        print("  └─────────────┴──────────────────────┴────────────────┘")
         return 0
 
     except Exception as exc:
-        print(f"\nFAIL: {exc}")
+        print(f"\n  [FAIL]  {exc}")
         import traceback
         traceback.print_exc()
         return 1

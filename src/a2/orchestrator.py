@@ -225,6 +225,7 @@ class Assignment2Pipeline:
         Returns:
             Unified result dict from CrudEngine.
         """
+        self._ensure_storage_connected()
         field_locations = self._get_field_locations()
         plan = self.query_planner.build_plan(operation, payload, field_locations)
         return self.crud_engine.execute(
@@ -244,6 +245,16 @@ class Assignment2Pipeline:
             return self._field_locations
         self._field_locations = self.metadata_catalog.get_field_locations()
         return self._field_locations
+
+    def _ensure_storage_connected(self) -> None:
+        """Connect underlying SQL/Mongo clients if not already connected."""
+        mysql = self.a1_pipeline._mysql_client
+        if getattr(mysql, "connection", None) is None:
+            mysql.connect()
+
+        mongo = self.a1_pipeline._mongo_client
+        if getattr(mongo, "client", None) is None:
+            mongo.connect()
 
     # ------------------------------------------------------------------
     # Record Generator
