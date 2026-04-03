@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
-from typing import Any
+from typing import Any, Optional
 
 from src.a2.contracts import CrudOperation, FieldLocation, QueryPlan
 from src.a2.crud_engine import CrudEngine
 from src.a2.query_planner import QueryPlanner
 
+from .concurrency_manager import ConcurrencyManager
 from .contracts import TransactionResult
 
 logger = logging.getLogger(__name__)
@@ -23,9 +24,15 @@ class TransactionCoordinator:
       documents before mutation and restore them on failure.
     """
 
-    def __init__(self, query_planner: QueryPlanner, crud_engine: CrudEngine):
+    def __init__(
+        self,
+        query_planner: QueryPlanner,
+        crud_engine: CrudEngine,
+        concurrency_manager: Optional[ConcurrencyManager] = None,
+    ):
         self.query_planner = query_planner
         self.crud_engine = crud_engine
+        self.concurrency_manager = concurrency_manager or ConcurrencyManager()
 
     def execute_in_transaction(
         self,
@@ -35,8 +42,30 @@ class TransactionCoordinator:
         mysql_client,
         mongo_client,
     ) -> TransactionResult:
+        # --- concurrency: determine lock scope ---
+        lock_key = ConcurrencyManager.extract_lock_key(operation.value, payload)
+        is_write = operation != CrudOperation.READ
+
+        self.concurrency_manager.acquire(lock_key, exclusive=is_write)
+        try:
+            return self._execute_locked(
+                operation, payload, field_locations,
+                mysql_client, mongo_client, lock_key,
+            )
+        finally:
+            self.concurrency_manager.release(lock_key, exclusive=is_write)
+
+    def _execute_locked(
+        self,
+        operation: CrudOperation,
+        payload: dict,
+        field_locations: list[FieldLocation],
+        mysql_client,
+        mongo_client,
+        lock_key: str,
+    ) -> TransactionResult:
         if operation == CrudOperation.READ:
-            return self._execute_read(payload, field_locations, mysql_client, mongo_client)
+            return self._execute_read(payload, field_locations, mysql_client, mongo_client, lock_key)
 
         plan = self.query_planner.build_plan(operation, payload, field_locations)
         sql_plan = self._sql_only_plan(plan)
@@ -48,6 +77,7 @@ class TransactionCoordinator:
                 status="error",
                 operation=operation.value,
                 errors=["MySQL connection not available"],
+                lock_key=lock_key,
             )
 
         original_commit = conn.commit
@@ -68,6 +98,7 @@ class TransactionCoordinator:
                     sql_result=sql_result,
                     rolled_back=True,
                     errors=sql_result.get("errors", []),
+                    lock_key=lock_key,
                 )
 
             mongo_snapshot = self._snapshot_mongo(mongo_client, mongo_plan, operation)
@@ -84,6 +115,7 @@ class TransactionCoordinator:
                     mongo_result=mongo_result,
                     rolled_back=True,
                     errors=all_errors,
+                    lock_key=lock_key,
                 )
 
             original_commit()
@@ -95,6 +127,7 @@ class TransactionCoordinator:
                 sql_result=sql_result,
                 mongo_result=mongo_result,
                 errors=merged_errors,
+                lock_key=lock_key,
             )
 
         except Exception as exc:
@@ -108,6 +141,7 @@ class TransactionCoordinator:
                 operation=operation.value,
                 rolled_back=True,
                 errors=[str(exc)],
+                lock_key=lock_key,
             )
 
         finally:
@@ -120,6 +154,7 @@ class TransactionCoordinator:
         field_locations: list[FieldLocation],
         mysql_client,
         mongo_client,
+        lock_key: str = "",
     ) -> TransactionResult:
         plan = self.query_planner.build_plan(CrudOperation.READ, payload, field_locations)
         result = self.crud_engine.execute(plan, mysql_client, mongo_client)
@@ -128,6 +163,7 @@ class TransactionCoordinator:
             operation="read",
             sql_result=result,
             errors=result.get("errors", []),
+            lock_key=lock_key,
         )
 
     @staticmethod

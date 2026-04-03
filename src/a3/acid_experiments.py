@@ -165,90 +165,42 @@ class AcidExperimentRunner:
         mysql_client,
         mongo_client,
     ) -> AcidTestResult:
+        """Run three concurrency contention tests and report aggregate result."""
         tag = f"_acid_iso_{uuid.uuid4().hex[:8]}"
         start = time.perf_counter()
         details: dict[str, Any] = {}
+        sub_results: list[bool] = []
 
         try:
-            record = self._build_test_record(tag, field_locations)
-            insert_result = self.txn.execute_in_transaction(
-                CrudOperation.CREATE,
-                {"records": [record]},
-                field_locations,
-                mysql_client,
-                mongo_client,
+            # --- sub-test 1: Lost Update Prevention ---
+            lost_update_passed, lost_update_details = self._test_lost_update(
+                tag, field_locations, mysql_client, mongo_client,
             )
-            if insert_result.status != "committed":
-                return self._result("isolation", False, "Setup insert failed", start, details)
+            details["lost_update"] = lost_update_details
+            sub_results.append(lost_update_passed)
 
-            title_field = self._find_field_path("title", field_locations)
-            username_field = self._find_field_path("username", field_locations)
+            # --- sub-test 2: Dirty Read Prevention ---
+            dirty_read_passed, dirty_read_details = self._test_dirty_read(
+                tag, field_locations, mysql_client, mongo_client,
+            )
+            details["dirty_read"] = dirty_read_details
+            sub_results.append(dirty_read_passed)
 
-            read_results: list[dict] = []
-            write_errors: list[str] = []
-            barrier = threading.Barrier(2, timeout=10)
+            # --- sub-test 3: Lock Timeout / Blocked Transaction ---
+            lock_timeout_passed, lock_timeout_details = self._test_lock_timeout(
+                tag, field_locations, mysql_client, mongo_client,
+            )
+            details["lock_timeout"] = lock_timeout_details
+            sub_results.append(lock_timeout_passed)
 
-            def writer():
-                try:
-                    barrier.wait()
-                    if title_field and username_field:
-                        self.txn.execute_in_transaction(
-                            CrudOperation.UPDATE,
-                            {
-                                "updates": {title_field: f"{tag}_updated"},
-                                "filters": {username_field: tag},
-                            },
-                            field_locations,
-                            mysql_client,
-                            mongo_client,
-                        )
-                except Exception as exc:
-                    write_errors.append(str(exc))
-
-            def reader():
-                try:
-                    barrier.wait()
-                    time.sleep(0.05)
-                    result = self.txn.execute_in_transaction(
-                        CrudOperation.READ,
-                        {
-                            "filters": {username_field: tag} if username_field else {},
-                            "limit": 1,
-                        },
-                        field_locations,
-                        mysql_client,
-                        mongo_client,
-                    )
-                    records = result.sql_result.get("records", [])
-                    read_results.extend(records)
-                except Exception as exc:
-                    write_errors.append(str(exc))
-
-            t_writer = threading.Thread(target=writer, daemon=True)
-            t_reader = threading.Thread(target=reader, daemon=True)
-            t_writer.start()
-            t_reader.start()
-            t_writer.join(timeout=15)
-            t_reader.join(timeout=15)
-
-            details["read_results_count"] = len(read_results)
-            details["write_errors"] = write_errors
-
-            passed = len(read_results) > 0 and not write_errors
+            passed = all(sub_results)
             desc = (
-                "Concurrent read and write on the same record. "
-                "Reader observed a consistent snapshot (either pre- or post-update), "
-                "confirming no dirty reads."
+                f"Ran 3 isolation sub-tests: "
+                f"lost_update={'PASS' if sub_results[0] else 'FAIL'}, "
+                f"dirty_read={'PASS' if sub_results[1] else 'FAIL'}, "
+                f"lock_timeout={'PASS' if sub_results[2] else 'FAIL'}. "
+                "Concurrency control prevents interference between overlapping transactions."
             )
-            if read_results:
-                title_val = None
-                for r in read_results:
-                    if isinstance(r, dict):
-                        title_val = r.get("post", {}).get("title") if isinstance(r.get("post"), dict) else r.get("title")
-                        break
-                details["observed_title"] = title_val
-                passed = title_val in (tag, f"{tag}_updated", None) and passed
-
             return self._result("isolation", passed, desc, start, details)
 
         except Exception as exc:
@@ -256,6 +208,268 @@ class AcidExperimentRunner:
             return self._result("isolation", False, f"Exception: {exc}", start, details)
         finally:
             self._cleanup_tag(tag, field_locations, mysql_client, mongo_client)
+
+    # ── Isolation sub-tests ──────────────────────────────────────────
+
+    def _test_lost_update(
+        self,
+        tag: str,
+        field_locations: list[FieldLocation],
+        mysql_client,
+        mongo_client,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Two threads update the same record's title concurrently.
+
+        With proper locking the final value must be one of the two
+        updates (serialized), never a corrupted mix or a lost update.
+        """
+        details: dict[str, Any] = {}
+        sub_tag = f"{tag}_lu"
+
+        # setup: insert a record
+        record = self._build_test_record(sub_tag, field_locations)
+        ins = self.txn.execute_in_transaction(
+            CrudOperation.CREATE,
+            {"records": [record]},
+            field_locations, mysql_client, mongo_client,
+        )
+        if ins.status != "committed":
+            details["setup"] = "insert failed"
+            return False, details
+
+        title_field = self._find_field_path("title", field_locations)
+        username_field = self._find_field_path("username", field_locations)
+        if not title_field or not username_field:
+            details["setup"] = "missing title or username field"
+            return False, details
+
+        update_a = f"{sub_tag}_A"
+        update_b = f"{sub_tag}_B"
+        errors: list[str] = []
+        barrier = threading.Barrier(2, timeout=10)
+
+        def updater(new_title: str) -> None:
+            try:
+                barrier.wait()
+                self.txn.execute_in_transaction(
+                    CrudOperation.UPDATE,
+                    {"updates": {title_field: new_title}, "filters": {username_field: sub_tag}},
+                    field_locations, mysql_client, mongo_client,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+
+        t1 = threading.Thread(target=updater, args=(update_a,), daemon=True)
+        t2 = threading.Thread(target=updater, args=(update_b,), daemon=True)
+        t1.start(); t2.start()
+        t1.join(timeout=15); t2.join(timeout=15)
+
+        # read final state
+        read_res = self.txn.execute_in_transaction(
+            CrudOperation.READ,
+            {"filters": {username_field: sub_tag}, "limit": 1},
+            field_locations, mysql_client, mongo_client,
+        )
+        records = read_res.sql_result.get("records", [])
+        final_title = None
+        for r in records:
+            t = self._extract_title(r)
+            if t is not None:
+                final_title = t
+                break
+
+        details["final_title"] = final_title
+        details["expected_one_of"] = [update_a, update_b]
+        details["errors"] = errors
+
+        passed = final_title in (update_a, update_b) and not errors
+        self._cleanup_tag(sub_tag, field_locations, mysql_client, mongo_client)
+        return passed, details
+
+    def _test_dirty_read(
+        self,
+        tag: str,
+        field_locations: list[FieldLocation],
+        mysql_client,
+        mongo_client,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Writer starts an update; concurrent reader must see only committed state.
+
+        The reader must observe either the original title or the final
+        committed title — never an in-flight uncommitted value.
+        """
+        details: dict[str, Any] = {}
+        sub_tag = f"{tag}_dr"
+
+        record = self._build_test_record(sub_tag, field_locations)
+        ins = self.txn.execute_in_transaction(
+            CrudOperation.CREATE,
+            {"records": [record]},
+            field_locations, mysql_client, mongo_client,
+        )
+        if ins.status != "committed":
+            details["setup"] = "insert failed"
+            return False, details
+
+        title_field = self._find_field_path("title", field_locations)
+        username_field = self._find_field_path("username", field_locations)
+        if not title_field or not username_field:
+            details["setup"] = "missing title or username field"
+            return False, details
+
+        original_title = sub_tag
+        updated_title = f"{sub_tag}_updated"
+        read_results: list[Any] = []
+        errors: list[str] = []
+        barrier = threading.Barrier(2, timeout=10)
+
+        def writer() -> None:
+            try:
+                barrier.wait()
+                self.txn.execute_in_transaction(
+                    CrudOperation.UPDATE,
+                    {"updates": {title_field: updated_title}, "filters": {username_field: sub_tag}},
+                    field_locations, mysql_client, mongo_client,
+                )
+            except Exception as exc:
+                errors.append(f"writer: {exc}")
+
+        def reader() -> None:
+            try:
+                barrier.wait()
+                time.sleep(0.02)  # small delay so write is in-flight
+                res = self.txn.execute_in_transaction(
+                    CrudOperation.READ,
+                    {"filters": {username_field: sub_tag}, "limit": 1},
+                    field_locations, mysql_client, mongo_client,
+                )
+                recs = res.sql_result.get("records", [])
+                read_results.extend(recs)
+            except Exception as exc:
+                errors.append(f"reader: {exc}")
+
+        tw = threading.Thread(target=writer, daemon=True)
+        tr = threading.Thread(target=reader, daemon=True)
+        tw.start(); tr.start()
+        tw.join(timeout=15); tr.join(timeout=15)
+
+        observed_title = None
+        for r in read_results:
+            t = self._extract_title(r)
+            if t is not None:
+                observed_title = t
+                break
+
+        details["observed_title"] = observed_title
+        details["valid_values"] = [original_title, updated_title]
+        details["errors"] = errors
+
+        # The observed title must be one of the two committed states
+        passed = observed_title in (original_title, updated_title, None) and not errors
+        self._cleanup_tag(sub_tag, field_locations, mysql_client, mongo_client)
+        return passed, details
+
+    def _test_lock_timeout(
+        self,
+        tag: str,
+        field_locations: list[FieldLocation],
+        mysql_client,
+        mongo_client,
+    ) -> tuple[bool, dict[str, Any]]:
+        """One thread holds a write; another attempts a write on the same key.
+
+        The second writer must either wait and succeed after the first
+        finishes (within timeout) or fail with a LockTimeoutError.
+        Either way the data must remain consistent.
+        """
+        from .concurrency_manager import LockTimeoutError
+
+        details: dict[str, Any] = {}
+        sub_tag = f"{tag}_lt"
+
+        record = self._build_test_record(sub_tag, field_locations)
+        ins = self.txn.execute_in_transaction(
+            CrudOperation.CREATE,
+            {"records": [record]},
+            field_locations, mysql_client, mongo_client,
+        )
+        if ins.status != "committed":
+            details["setup"] = "insert failed"
+            return False, details
+
+        title_field = self._find_field_path("title", field_locations)
+        username_field = self._find_field_path("username", field_locations)
+        if not title_field or not username_field:
+            details["setup"] = "missing title or username field"
+            return False, details
+
+        results_a: list[str] = []
+        results_b: list[str] = []
+        errors: list[str] = []
+        barrier = threading.Barrier(2, timeout=10)
+
+        def slow_writer() -> None:
+            """Holds the lock for a noticeable duration."""
+            try:
+                barrier.wait()
+                self.txn.execute_in_transaction(
+                    CrudOperation.UPDATE,
+                    {"updates": {title_field: f"{sub_tag}_slow"}, "filters": {username_field: sub_tag}},
+                    field_locations, mysql_client, mongo_client,
+                )
+                results_a.append("committed")
+            except Exception as exc:
+                errors.append(f"slow_writer: {exc}")
+
+        def competing_writer() -> None:
+            """Attempts a write on the same entity — should be serialized."""
+            try:
+                barrier.wait()
+                time.sleep(0.01)  # ensure it arrives slightly after
+                self.txn.execute_in_transaction(
+                    CrudOperation.UPDATE,
+                    {"updates": {title_field: f"{sub_tag}_fast"}, "filters": {username_field: sub_tag}},
+                    field_locations, mysql_client, mongo_client,
+                )
+                results_b.append("committed")
+            except LockTimeoutError:
+                results_b.append("timeout")
+            except Exception as exc:
+                errors.append(f"competing_writer: {exc}")
+
+        t1 = threading.Thread(target=slow_writer, daemon=True)
+        t2 = threading.Thread(target=competing_writer, daemon=True)
+        t1.start(); t2.start()
+        t1.join(timeout=20); t2.join(timeout=20)
+
+        details["writer_a"] = results_a
+        details["writer_b"] = results_b
+        details["errors"] = errors
+
+        # read final state for consistency check
+        read_res = self.txn.execute_in_transaction(
+            CrudOperation.READ,
+            {"filters": {username_field: sub_tag}, "limit": 1},
+            field_locations, mysql_client, mongo_client,
+        )
+        recs = read_res.sql_result.get("records", [])
+        final_title = None
+        for r in recs:
+            t = self._extract_title(r)
+            if t is not None:
+                final_title = t
+                break
+
+        details["final_title"] = final_title
+
+        # Success: both committed in serial order, OR one timed out — data is consistent
+        a_ok = len(results_a) == 1
+        b_ok = len(results_b) == 1 and results_b[0] in ("committed", "timeout")
+        data_ok = final_title in (f"{sub_tag}_slow", f"{sub_tag}_fast", sub_tag)
+
+        passed = a_ok and b_ok and data_ok and not errors
+        self._cleanup_tag(sub_tag, field_locations, mysql_client, mongo_client)
+        return passed, details
 
     def test_durability(
         self,
@@ -307,27 +521,57 @@ class AcidExperimentRunner:
             self._ensure_connected(mysql_client, mongo_client)
             self._cleanup_tag(tag, field_locations, mysql_client, mongo_client)
 
+    @staticmethod
+    def _extract_title(rec: dict) -> Any:
+        """Search a record for title across all possible column name formats."""
+        if not isinstance(rec, dict):
+            return None
+        if "title" in rec:
+            return rec["title"]
+        for key, val in rec.items():
+            if key.endswith(".title") or key.endswith("_title"):
+                return val
+        if isinstance(rec.get("post"), dict):
+            return rec["post"].get("title")
+        return None
+
     def _build_test_record(
         self,
         tag: str,
         field_locations: list[FieldLocation],
     ) -> dict[str, Any]:
+        """Build a minimal valid record that satisfies all NOT NULL columns."""
         record: dict[str, Any] = {}
+
+        def _set_nested(d: dict, path: str, value: Any) -> None:
+            parts = path.split(".")
+            for part in parts[:-1]:
+                d = d.setdefault(part, {})
+            d[parts[-1]] = value
+
         for loc in field_locations:
             path = loc.field_path
-            if "." in path:
-                continue
-            canonical = path.lower()
+            canonical = path.split(".")[-1].lower()
+
             if canonical in ("username", "user_id", "id"):
-                record[path] = tag
+                _set_nested(record, path, tag)
             elif canonical in ("event_id",):
-                record[path] = f"evt_{tag}"
+                _set_nested(record, path, f"evt_{tag}")
             elif canonical in ("title", "name"):
-                record[path] = tag
+                _set_nested(record, path, tag)
             elif canonical in ("timestamp", "sys_ingested_at", "created_at"):
-                record[path] = "2026-01-01T00:00:00Z"
+                _set_nested(record, path, "2026-01-01T00:00:00Z")
+            elif canonical in ("tags",):
+                _set_nested(record, path, ["test"])
+            elif canonical in ("count",):
+                _set_nested(record, path, 1)
+            elif canonical in ("latency_ms", "battery_pct"):
+                _set_nested(record, path, 0.0)
+            elif canonical.endswith("_id") or canonical.endswith("_count"):
+                # Likely BIGINT column — use a deterministic integer from tag
+                _set_nested(record, path, abs(hash(f"{tag}_{path}")) % 100000)
             else:
-                record[path] = f"test_{tag}"
+                _set_nested(record, path, f"test_{tag}")
         return record
 
     def _find_field_path(self, short_name: str, field_locations: list[FieldLocation]) -> str | None:

@@ -8,6 +8,7 @@ from src.a2.orchestrator import Assignment2Pipeline
 from src.config import AppConfig, get_config
 
 from .acid_experiments import AcidExperimentRunner
+from .concurrency_manager import ConcurrencyManager
 from .contracts import AcidTestResult, LogicalEntity, SessionInfo, TransactionResult
 from .logical_reconstructor import LogicalReconstructor
 from .session_manager import SessionManager
@@ -21,9 +22,10 @@ class Assignment3Pipeline:
 
     Layers on top of Assignment2Pipeline:
     1. Transaction coordination (all-or-nothing multi-backend ops)
-    2. Logical data reconstruction (unified entity view)
-    3. Session management (schema/connection state)
-    4. ACID validation experiments
+    2. Concurrency control (per-entity read/write locking)
+    3. Logical data reconstruction (unified entity view)
+    4. Session management (schema/connection state)
+    5. ACID validation experiments
     """
 
     def __init__(
@@ -34,9 +36,11 @@ class Assignment3Pipeline:
         self.config = config or get_config()
         self.a2 = a2_pipeline or Assignment2Pipeline(self.config)
 
+        self.concurrency_manager = ConcurrencyManager(default_timeout=5.0)
         self.transaction_coordinator = TransactionCoordinator(
             query_planner=self.a2.query_planner,
             crud_engine=self.a2.crud_engine,
+            concurrency_manager=self.concurrency_manager,
         )
         self.logical_reconstructor = LogicalReconstructor(
             query_planner=self.a2.query_planner,

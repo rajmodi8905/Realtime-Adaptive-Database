@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -12,6 +12,7 @@ class TransactionResult:
     mongo_result: dict[str, Any] = field(default_factory=dict)
     rolled_back: bool = False
     errors: list[str] = field(default_factory=list)
+    lock_key: Optional[str] = None
 
 
 @dataclass
