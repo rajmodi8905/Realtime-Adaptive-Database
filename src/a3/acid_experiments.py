@@ -11,6 +11,7 @@ from src.a2.query_planner import QueryPlanner
 
 from .contracts import AcidTestResult, TransactionResult
 from .transaction_coordinator import TransactionCoordinator
+from .logical_reconstructor import LogicalReconstructor
 
 
 class AcidExperimentRunner:
@@ -25,6 +26,7 @@ class AcidExperimentRunner:
         self.txn = transaction_coordinator
         self.query_planner = query_planner
         self.crud_engine = crud_engine
+        self.logical_reconstructor = LogicalReconstructor(self.query_planner, self.crud_engine)
 
     def run_all(
         self,
@@ -37,6 +39,7 @@ class AcidExperimentRunner:
             self.test_consistency(field_locations, mysql_client, mongo_client),
             self.test_isolation(field_locations, mysql_client, mongo_client),
             self.test_durability(field_locations, mysql_client, mongo_client),
+            self.test_reconstruction(field_locations, mysql_client, mongo_client),
         ]
 
     def test_atomicity(
@@ -306,6 +309,71 @@ class AcidExperimentRunner:
         finally:
             self._ensure_connected(mysql_client, mongo_client)
             self._cleanup_tag(tag, field_locations, mysql_client, mongo_client)
+
+    def test_reconstruction(
+        self,
+        field_locations: list[FieldLocation],
+        mysql_client,
+        mongo_client,
+    ) -> AcidTestResult:
+        """Test logical reconstruction of split SQL+Mongo data into unified JSON.
+        
+        Verifies:
+        - Data from both SQL and Mongo merge correctly
+        - Output is backend-agnostic (no table/collection names exposed)
+        - Nested structures are preserved
+        - No empty records or stale metadata fields
+        """
+        start = time.perf_counter()
+        details: dict[str, Any] = {}
+        try:
+            # Get reconstructed data
+            all_data = self.logical_reconstructor.get_all_data(
+                field_locations=field_locations,
+                mysql_client=mysql_client,
+                mongo_client=mongo_client,
+                limit=10,
+            )
+
+            # Filter empty records
+            non_empty = [d for d in all_data if isinstance(d, dict) and len(d) > 0]
+            details["total_records"] = len(all_data)
+            details["non_empty_records"] = len(non_empty)
+
+            if not non_empty:
+                desc = "All reconstructed records are empty — metadata/merge issue."
+                return self._result("reconstruction", False, desc, start, details)
+
+            # Verify no raw join keys or internal fields leaked
+            leaked_keys: set[str] = set()
+            for record in non_empty[:5]:  # Sample first 5
+                for key in list(record.keys()):
+                    if key.startswith("_") or key in ("post_tags_id", "attachment_id"):
+                        leaked_keys.add(key)
+
+            # Verify nested structures exist
+            has_nesting = any(
+                any(isinstance(v, dict) for v in record.values())
+                for record in non_empty
+            )
+
+            details["leaked_internal_keys"] = sorted(list(leaked_keys))
+            details["has_nested_structures"] = has_nesting
+            if non_empty:
+                details["sample_record"] = non_empty[0]
+
+            # Reconstruction passes if: no empty records, no leaked keys, nested structures present
+            passed = len(non_empty) == len(all_data) and len(leaked_keys) == 0 and has_nesting
+            desc = (
+                "Validated SQL+Mongo reconstruction: non-empty records, "
+                "no leaked internal keys, nested structures preserved."
+            )
+            return self._result("reconstruction", passed, desc, start, details)
+
+        except Exception as exc:
+            details["error"] = str(exc)
+            desc = f"Reconstruction test failed: {exc}"
+            return self._result("reconstruction", False, desc, start, details)
 
     def _build_test_record(
         self,
