@@ -148,7 +148,10 @@ class AcidExperimentRunner:
             count_after_dup = self._count_sql_by_tag(tag, field_locations, mysql_client)
             details["count_after_duplicate"] = count_after_dup
 
-            passed = count_after_dup >= count_after_first
+            passed = (
+                r2.status in ("failed", "rolled_back")
+                or count_after_dup == count_after_first
+            )
             desc = (
                 "Inserted a record, then re-inserted the same record. "
                 "Verified the system either rejected the duplicate or "
