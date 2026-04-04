@@ -121,8 +121,9 @@ class TransactionCoordinator:
             original_commit()
 
             merged_errors = sql_result.get("errors", []) + mongo_result.get("errors", [])
+            tx_status = self._status_from_results(sql_result, mongo_result)
             return TransactionResult(
-                status="committed",
+                status=tx_status,
                 operation=operation.value,
                 sql_result=sql_result,
                 mongo_result=mongo_result,
@@ -158,13 +159,21 @@ class TransactionCoordinator:
     ) -> TransactionResult:
         plan = self.query_planner.build_plan(CrudOperation.READ, payload, field_locations)
         result = self.crud_engine.execute(plan, mysql_client, mongo_client)
+        tx_status = "committed" if result.get("status") != "error" else "error"
         return TransactionResult(
-            status="committed",
+            status=tx_status,
             operation="read",
             sql_result=result,
             errors=result.get("errors", []),
             lock_key=lock_key,
         )
+
+    @staticmethod
+    def _status_from_results(*results: dict[str, Any]) -> str:
+        statuses = [str((result or {}).get("status", "")).lower() for result in results]
+        if any(status == "error" for status in statuses):
+            return "error"
+        return "committed"
 
     @staticmethod
     def _sql_only_plan(plan: QueryPlan) -> QueryPlan:

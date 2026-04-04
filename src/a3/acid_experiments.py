@@ -133,8 +133,10 @@ class AcidExperimentRunner:
             )
             details["first_insert"] = r1.status
 
-            count_after_first = self._count_sql_by_tag(tag, field_locations, mysql_client)
-            details["count_after_first"] = count_after_first
+            sql_count_after_first = self._count_sql_by_tag(tag, field_locations, mysql_client)
+            mongo_count_after_first = self._count_mongo_by_tag(tag, field_locations, mongo_client)
+            details["sql_count_after_first"] = sql_count_after_first
+            details["mongo_count_after_first"] = mongo_count_after_first
 
             r2 = self.txn.execute_in_transaction(
                 CrudOperation.CREATE,
@@ -145,12 +147,17 @@ class AcidExperimentRunner:
             )
             details["duplicate_insert"] = r2.status
 
-            count_after_dup = self._count_sql_by_tag(tag, field_locations, mysql_client)
-            details["count_after_duplicate"] = count_after_dup
+            sql_count_after_dup = self._count_sql_by_tag(tag, field_locations, mysql_client)
+            mongo_count_after_dup = self._count_mongo_by_tag(tag, field_locations, mongo_client)
+            details["sql_count_after_duplicate"] = sql_count_after_dup
+            details["mongo_count_after_duplicate"] = mongo_count_after_dup
 
             passed = (
                 r2.status in ("failed", "rolled_back")
-                or count_after_dup == count_after_first
+                or (
+                    sql_count_after_dup == sql_count_after_first
+                    and mongo_count_after_dup == mongo_count_after_first
+                )
             )
             desc = (
                 "Inserted a record, then re-inserted the same record. "
