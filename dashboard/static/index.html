@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logical Dashboard — Adaptive Database</title>
+    <meta name="description" content="Interactive logical dashboard for the hybrid SQL/MongoDB adaptive database framework">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- ── Toast Container ──────────────────────────────────────── -->
+    <div id="toast-container"></div>
+
+    <!-- ── Header / Session Bar ─────────────────────────────────── -->
+    <header id="session-bar">
+        <div class="session-left">
+            <div class="logo">
+                <span class="logo-icon">◆</span>
+                <span class="logo-text">Logical Dashboard</span>
+            </div>
+        </div>
+        <div class="session-info" id="session-info">
+            <div class="session-chip" id="chip-schema">
+                <span class="chip-label">Schema</span>
+                <span class="chip-value" id="val-schema">—</span>
+            </div>
+            <div class="session-chip" id="chip-version">
+                <span class="chip-label">Version</span>
+                <span class="chip-value" id="val-version">—</span>
+            </div>
+            <div class="session-chip" id="chip-root">
+                <span class="chip-label">Root</span>
+                <span class="chip-value" id="val-root">—</span>
+            </div>
+            <div class="session-chip" id="chip-fields">
+                <span class="chip-label">Fields</span>
+                <span class="chip-value" id="val-fields">—</span>
+            </div>
+            <div class="session-chip" id="chip-mysql">
+                <span class="dot dot-off" id="dot-mysql"></span>
+                <span class="chip-value">MySQL</span>
+            </div>
+            <div class="session-chip" id="chip-mongo">
+                <span class="dot dot-off" id="dot-mongo"></span>
+                <span class="chip-value">MongoDB</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ── Main Layout ──────────────────────────────────────────── -->
+    <div class="layout">
+        <!-- ── Sidebar ──────────────────────────────────────────── -->
+        <nav id="sidebar">
+            <!-- Bootstrap -->
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Setup</div>
+                <button class="sidebar-btn active" data-view="bootstrap" id="nav-bootstrap">
+                    <span class="btn-icon">⚡</span> Bootstrap
+                </button>
+            </div>
+
+            <!-- Data -->
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Data</div>
+                <button class="sidebar-btn" data-view="entities" id="nav-entities">
+                    <span class="btn-icon">📋</span> Entity Browser
+                </button>
+                <button class="sidebar-btn" data-view="query" id="nav-query">
+                    <span class="btn-icon">🔍</span> Query Workspace
+                </button>
+            </div>
+
+            <!-- CRUD -->
+            <div class="sidebar-section">
+                <div class="sidebar-heading">CRUD Operations</div>
+                <button class="sidebar-btn" data-view="crud-create" id="nav-create">
+                    <span class="btn-icon">➕</span> Create
+                </button>
+                <button class="sidebar-btn" data-view="crud-read" id="nav-read">
+                    <span class="btn-icon">📖</span> Read
+                </button>
+                <button class="sidebar-btn" data-view="crud-update" id="nav-update">
+                    <span class="btn-icon">✏️</span> Update
+                </button>
+                <button class="sidebar-btn" data-view="crud-delete" id="nav-delete">
+                    <span class="btn-icon">🗑️</span> Delete
+                </button>
+            </div>
+
+            <!-- ACID Tests -->
+            <div class="sidebar-section">
+                <div class="sidebar-heading">ACID + R Tests</div>
+                <div class="acid-buttons">
+                    <button class="acid-btn" data-test="reconstruction" id="acid-r" title="Reconstruction">R</button>
+                    <button class="acid-btn" data-test="atomicity" id="acid-a" title="Atomicity">A</button>
+                    <button class="acid-btn" data-test="consistency" id="acid-c" title="Consistency">C</button>
+                    <button class="acid-btn" data-test="isolation" id="acid-i" title="Isolation">I</button>
+                    <button class="acid-btn" data-test="durability" id="acid-d" title="Durability">D</button>
+                </div>
+                <button class="sidebar-btn run-all-btn" id="acid-run-all">
+                    <span class="btn-icon">▶</span> Run All Tests
+                </button>
+                <button class="sidebar-btn" data-view="acid-results" id="nav-acid">
+                    <span class="btn-icon">📊</span> Test Results
+                </button>
+            </div>
+        </nav>
+
+        <!-- ── Main Content ─────────────────────────────────────── -->
+        <main id="main-content">
+
+            <!-- ── Bootstrap View ───────────────────────────────── -->
+            <section class="view active" id="view-bootstrap">
+                <div class="view-header">
+                    <h1>Bootstrap Database</h1>
+                    <p class="view-subtitle">Initialize the pipeline: register schema → generate records → ingest → build storage → insert data</p>
+                </div>
+                <div class="card glass">
+                    <div class="bootstrap-form">
+                        <div class="form-group">
+                            <label for="record-count">Number of Records</label>
+                            <input type="number" id="record-count" value="100" min="10" max="1000" step="10">
+                        </div>
+                        <button class="btn btn-primary btn-lg" id="btn-bootstrap">
+                            <span class="btn-content">⚡ Bootstrap Database</span>
+                            <span class="spinner hidden" id="bootstrap-spinner"></span>
+                        </button>
+                    </div>
+                    <div class="bootstrap-status hidden" id="bootstrap-status">
+                        <div class="status-icon" id="bootstrap-icon">✅</div>
+                        <div class="status-text" id="bootstrap-text"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Entity Browser View ──────────────────────────── -->
+            <section class="view" id="view-entities">
+                <div class="view-header">
+                    <h1>Entity Browser</h1>
+                    <p class="view-subtitle">Browse logical entities reconstructed from split SQL + MongoDB storage</p>
+                </div>
+                <div class="entity-layout">
+                    <div class="entity-list card glass" id="entity-list">
+                        <div class="card-header">Entities</div>
+                        <div id="entity-names">
+                            <div class="placeholder-text">Bootstrap first to see entities</div>
+                        </div>
+                    </div>
+                    <div class="entity-data card glass" id="entity-data">
+                        <div class="card-header">
+                            <span id="entity-data-title">Select an entity</span>
+                            <div class="pagination" id="entity-pagination"></div>
+                        </div>
+                        <div id="entity-table-container">
+                            <div class="placeholder-text">Select an entity from the list</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Query Workspace View ─────────────────────────── -->
+            <section class="view" id="view-query">
+                <div class="view-header">
+                    <h1>Query Workspace</h1>
+                    <p class="view-subtitle">Execute JSON queries against the logical data layer</p>
+                </div>
+                <div class="query-layout">
+                    <div class="card glass">
+                        <div class="card-header">Query Input</div>
+                        <textarea class="json-editor" id="query-input" spellcheck="false">{
+  "operation": "read",
+  "fields": ["username", "event_id"],
+  "filters": {},
+  "limit": 10
+}</textarea>
+                        <div class="query-actions">
+                            <button class="btn btn-secondary" id="btn-preview">Preview Plan</button>
+                            <button class="btn btn-primary" id="btn-execute-query">Execute</button>
+                        </div>
+                    </div>
+                    <div class="card glass">
+                        <div class="card-header" id="query-result-header">Result</div>
+                        <pre class="result-pane" id="query-result"><span class="placeholder-text">Results will appear here</span></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── CRUD Create View ─────────────────────────────── -->
+            <section class="view" id="view-crud-create">
+                <div class="view-header">
+                    <h1>Create Records</h1>
+                    <p class="view-subtitle">Insert new records with data integrity validation</p>
+                </div>
+                <div class="card glass">
+                    <div class="card-header">
+                        <span>Record Input (JSON Array)</span>
+                        <button class="btn btn-ghost btn-sm" id="btn-generate-template">Generate Template</button>
+                    </div>
+                    <textarea class="json-editor" id="create-input" spellcheck="false" placeholder='[{"username": "alice", "event_id": "e1", "timestamp": "2026-01-01T00:00:00Z", "post": {"post_id": "p1", "title": "Hello"}}]'></textarea>
+                    <div class="form-info" id="create-constraints"></div>
+                    <div class="query-actions">
+                        <button class="btn btn-primary" id="btn-create">Create Records</button>
+                    </div>
+                    <div class="result-section hidden" id="create-result"></div>
+                </div>
+            </section>
+
+            <!-- ── CRUD Read View ───────────────────────────────── -->
+            <section class="view" id="view-crud-read">
+                <div class="view-header">
+                    <h1>Read Records</h1>
+                    <p class="view-subtitle">Query records with filters and field selection</p>
+                </div>
+                <div class="card glass">
+                    <div class="card-header">Filters & Fields</div>
+                    <div class="filter-builder" id="read-filters">
+                        <div class="filter-row">
+                            <input type="text" placeholder="Field name" class="filter-key">
+                            <input type="text" placeholder="Value" class="filter-value">
+                            <button class="btn btn-ghost btn-sm btn-remove-filter">✕</button>
+                        </div>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" id="btn-add-read-filter">+ Add Filter</button>
+                    <div class="form-group" style="margin-top: 12px">
+                        <label for="read-fields">Fields (comma-separated, leave empty for all)</label>
+                        <input type="text" id="read-fields" placeholder="username, event_id, title">
+                    </div>
+                    <div class="form-group">
+                        <label for="read-limit">Limit</label>
+                        <input type="number" id="read-limit" value="10" min="1" max="1000">
+                    </div>
+                    <div class="query-actions">
+                        <button class="btn btn-primary" id="btn-read">Read Records</button>
+                    </div>
+                </div>
+                <div class="card glass hidden" id="read-result-card">
+                    <div class="card-header">Results</div>
+                    <div id="read-result-table"></div>
+                </div>
+            </section>
+
+            <!-- ── CRUD Update View ─────────────────────────────── -->
+            <section class="view" id="view-crud-update">
+                <div class="view-header">
+                    <h1>Update Records</h1>
+                    <p class="view-subtitle">Update existing records with transactional guarantees</p>
+                </div>
+                <div class="card glass">
+                    <div class="card-header">Filters (identify records to update)</div>
+                    <div class="filter-builder" id="update-filters">
+                        <div class="filter-row">
+                            <input type="text" placeholder="Field name" class="filter-key">
+                            <input type="text" placeholder="Value" class="filter-value">
+                            <button class="btn btn-ghost btn-sm btn-remove-filter">✕</button>
+                        </div>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" id="btn-add-update-filter">+ Add Filter</button>
+                </div>
+                <div class="card glass">
+                    <div class="card-header">Updates (fields to modify)</div>
+                    <div class="filter-builder" id="update-fields">
+                        <div class="filter-row">
+                            <input type="text" placeholder="Field name" class="filter-key">
+                            <input type="text" placeholder="New value" class="filter-value">
+                            <button class="btn btn-ghost btn-sm btn-remove-filter">✕</button>
+                        </div>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" id="btn-add-update-field">+ Add Field</button>
+                    <div class="query-actions">
+                        <button class="btn btn-primary" id="btn-update">Update Records</button>
+                    </div>
+                    <div class="result-section hidden" id="update-result"></div>
+                </div>
+            </section>
+
+            <!-- ── CRUD Delete View ─────────────────────────────── -->
+            <section class="view" id="view-crud-delete">
+                <div class="view-header">
+                    <h1>Delete Records</h1>
+                    <p class="view-subtitle">Delete records with confirmation and transactional safety</p>
+                </div>
+                <div class="card glass">
+                    <div class="card-header">Filters (identify records to delete)</div>
+                    <div class="filter-builder" id="delete-filters">
+                        <div class="filter-row">
+                            <input type="text" placeholder="Field name" class="filter-key">
+                            <input type="text" placeholder="Value" class="filter-value">
+                            <button class="btn btn-ghost btn-sm btn-remove-filter">✕</button>
+                        </div>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" id="btn-add-delete-filter">+ Add Filter</button>
+                    <div class="query-actions">
+                        <button class="btn btn-danger" id="btn-delete">Delete Records</button>
+                    </div>
+                    <div class="result-section hidden" id="delete-result"></div>
+                </div>
+            </section>
+
+            <!-- ── ACID Results View ────────────────────────────── -->
+            <section class="view" id="view-acid-results">
+                <div class="view-header">
+                    <h1>ACID + R Test Results</h1>
+                    <p class="view-subtitle">Validation experiments for Atomicity, Consistency, Isolation, Durability & Reconstruction</p>
+                </div>
+                <div id="acid-results-container">
+                    <div class="placeholder-text">Run tests using the sidebar buttons or "Run All"</div>
+                </div>
+                <div class="card glass hidden" id="acid-log-card">
+                    <div class="card-header">Live Logs</div>
+                    <pre class="log-pane" id="acid-log-pane"></pre>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- ── Confirmation Modal ───────────────────────────────────── -->
+    <div class="modal-overlay hidden" id="confirm-modal">
+        <div class="modal card glass">
+            <div class="modal-header">⚠️ Confirm Delete</div>
+            <div class="modal-body" id="confirm-body">Are you sure you want to delete these records?</div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="confirm-cancel">Cancel</button>
+                <button class="btn btn-danger" id="confirm-ok">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

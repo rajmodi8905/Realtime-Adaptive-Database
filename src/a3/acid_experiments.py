@@ -504,7 +504,8 @@ class AcidExperimentRunner:
 
         details["final_title"] = final_title
 
-        # Success: both committed in serial order, OR one timed out — data is consistent
+        # Success: both committed in serial order, OR one timed out — data is consistent.
+        # If the competing writer committed, it must have waited for the slow writer.
         a_ok = len(results_a) == 1
         b_ok = len(results_b) == 1 and results_b[0] in ("committed", "timeout")
         waited_ok = True

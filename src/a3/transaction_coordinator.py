@@ -41,12 +41,17 @@ class TransactionCoordinator:
         field_locations: list[FieldLocation],
         mysql_client,
         mongo_client,
+        lock_timeout_seconds: Optional[float] = None,
     ) -> TransactionResult:
         # --- concurrency: determine lock scope ---
         lock_key = ConcurrencyManager.extract_lock_key(operation.value, payload)
         is_write = operation != CrudOperation.READ
 
-        self.concurrency_manager.acquire(lock_key, exclusive=is_write)
+        self.concurrency_manager.acquire(
+            lock_key,
+            exclusive=is_write,
+            timeout=lock_timeout_seconds,
+        )
         try:
             return self._execute_locked(
                 operation, payload, field_locations,

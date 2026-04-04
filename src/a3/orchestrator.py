@@ -174,6 +174,7 @@ class Assignment3Pipeline:
             "consistency": self.acid_runner.test_consistency,
             "isolation": self.acid_runner.test_isolation,
             "durability": self.acid_runner.test_durability,
+            "reconstruction": self.acid_runner.test_reconstruction,
         }
         handler = dispatch.get(property_name.lower())
         if handler is None:
