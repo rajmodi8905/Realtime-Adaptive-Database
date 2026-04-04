@@ -259,16 +259,20 @@ class AcidExperimentRunner:
         update_a = f"{sub_tag}_A"
         update_b = f"{sub_tag}_B"
         errors: list[str] = []
+        writer_statuses: list[str] = []
         barrier = threading.Barrier(2, timeout=10)
 
         def updater(new_title: str) -> None:
             try:
                 barrier.wait()
-                self.txn.execute_in_transaction(
+                result = self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
                     {"updates": {title_field: new_title}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
+                writer_statuses.append(result.status)
+                if result.status != "committed":
+                    errors.append(f"update status={result.status} errors={result.errors}")
             except Exception as exc:
                 errors.append(str(exc))
 
@@ -276,6 +280,7 @@ class AcidExperimentRunner:
         t2 = threading.Thread(target=updater, args=(update_b,), daemon=True)
         t1.start(); t2.start()
         t1.join(timeout=15); t2.join(timeout=15)
+        threads_finished = not t1.is_alive() and not t2.is_alive()
 
         # read final state
         read_res = self.txn.execute_in_transaction(
@@ -293,9 +298,17 @@ class AcidExperimentRunner:
 
         details["final_title"] = final_title
         details["expected_one_of"] = [update_a, update_b]
+        details["writer_statuses"] = writer_statuses
+        details["threads_finished"] = threads_finished
         details["errors"] = errors
 
-        passed = final_title in (update_a, update_b) and not errors
+        passed = (
+            threads_finished
+            and len(writer_statuses) == 2
+            and all(status == "committed" for status in writer_statuses)
+            and final_title in (update_a, update_b)
+            and not errors
+        )
         self._cleanup_tag(sub_tag, field_locations, mysql_client, mongo_client)
         return passed, details
 
@@ -334,16 +347,21 @@ class AcidExperimentRunner:
         updated_title = f"{sub_tag}_updated"
         read_results: list[Any] = []
         errors: list[str] = []
+        writer_statuses: list[str] = []
+        reader_statuses: list[str] = []
         barrier = threading.Barrier(2, timeout=10)
 
         def writer() -> None:
             try:
                 barrier.wait()
-                self.txn.execute_in_transaction(
+                result = self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
                     {"updates": {title_field: updated_title}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
+                writer_statuses.append(result.status)
+                if result.status != "committed":
+                    errors.append(f"writer status={result.status} errors={result.errors}")
             except Exception as exc:
                 errors.append(f"writer: {exc}")
 
@@ -356,6 +374,9 @@ class AcidExperimentRunner:
                     {"filters": {username_field: sub_tag}, "limit": 1},
                     field_locations, mysql_client, mongo_client,
                 )
+                reader_statuses.append(res.status)
+                if res.status != "committed":
+                    errors.append(f"reader status={res.status} errors={res.errors}")
                 recs = res.sql_result.get("records", [])
                 read_results.extend(recs)
             except Exception as exc:
@@ -365,6 +386,7 @@ class AcidExperimentRunner:
         tr = threading.Thread(target=reader, daemon=True)
         tw.start(); tr.start()
         tw.join(timeout=15); tr.join(timeout=15)
+        threads_finished = not tw.is_alive() and not tr.is_alive()
 
         observed_title = None
         for r in read_results:
@@ -375,10 +397,21 @@ class AcidExperimentRunner:
 
         details["observed_title"] = observed_title
         details["valid_values"] = [original_title, updated_title]
+        details["writer_statuses"] = writer_statuses
+        details["reader_statuses"] = reader_statuses
+        details["reader_row_count"] = len(read_results)
+        details["threads_finished"] = threads_finished
         details["errors"] = errors
 
         # The observed title must be one of the two committed states
-        passed = observed_title in (original_title, updated_title, None) and not errors
+        passed = (
+            threads_finished
+            and writer_statuses == ["committed"]
+            and reader_statuses == ["committed"]
+            and len(read_results) > 0
+            and observed_title in (original_title, updated_title)
+            and not errors
+        )
         self._cleanup_tag(sub_tag, field_locations, mysql_client, mongo_client)
         return passed, details
 
@@ -395,7 +428,7 @@ class AcidExperimentRunner:
         finishes (within timeout) or fail with a LockTimeoutError.
         Either way the data must remain consistent.
         """
-        from .concurrency_manager import LockTimeoutError
+        from .concurrency_manager import LockTimeoutError, ConcurrencyManager
 
         details: dict[str, Any] = {}
         sub_tag = f"{tag}_lt"
@@ -419,30 +452,35 @@ class AcidExperimentRunner:
         results_a: list[str] = []
         results_b: list[str] = []
         errors: list[str] = []
-        barrier = threading.Barrier(2, timeout=10)
+        holder_ready = threading.Event()
+        lock_key = ConcurrencyManager.extract_lock_key(
+            CrudOperation.UPDATE.value,
+            {"updates": {title_field: f"{sub_tag}_fast"}, "filters": {username_field: sub_tag}},
+        )
 
-        def slow_writer() -> None:
-            """Holds the lock for a noticeable duration."""
+        def lock_holder() -> None:
+            """Hold the entity write lock long enough to force competitor timeout."""
             try:
-                barrier.wait()
-                self.txn.execute_in_transaction(
-                    CrudOperation.UPDATE,
-                    {"updates": {title_field: f"{sub_tag}_slow"}, "filters": {username_field: sub_tag}},
-                    field_locations, mysql_client, mongo_client,
-                )
-                results_a.append("committed")
+                self.txn.concurrency_manager.acquire(lock_key, exclusive=True, timeout=1.0)
+                holder_ready.set()
+                time.sleep(0.25)
+                results_a.append("held")
             except Exception as exc:
-                errors.append(f"slow_writer: {exc}")
+                errors.append(f"lock_holder: {exc}")
+            finally:
+                try:
+                    self.txn.concurrency_manager.release(lock_key, exclusive=True)
+                except Exception:
+                    pass
 
         def competing_writer() -> None:
-            """Attempts a write on the same entity — should be serialized."""
+            """Attempts a write on the same entity — should timeout strictly."""
             try:
-                barrier.wait()
-                time.sleep(0.01)  # ensure it arrives slightly after
                 self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
                     {"updates": {title_field: f"{sub_tag}_fast"}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
+                    lock_timeout_seconds=0.05,
                 )
                 results_b.append("committed")
             except LockTimeoutError:
@@ -450,13 +488,26 @@ class AcidExperimentRunner:
             except Exception as exc:
                 errors.append(f"competing_writer: {exc}")
 
-        t1 = threading.Thread(target=slow_writer, daemon=True)
+        t1 = threading.Thread(target=lock_holder, daemon=True)
+        t1.start()
+        if not holder_ready.wait(timeout=5):
+            errors.append("lock_holder did not acquire lock in time")
+
         t2 = threading.Thread(target=competing_writer, daemon=True)
-        t1.start(); t2.start()
-        t1.join(timeout=20); t2.join(timeout=20)
+        t2.start()
+        t2.join(timeout=10)
+        t1.join(timeout=10)
+
+        recovery = self.txn.execute_in_transaction(
+            CrudOperation.UPDATE,
+            {"updates": {title_field: f"{sub_tag}_recovered"}, "filters": {username_field: sub_tag}},
+            field_locations, mysql_client, mongo_client,
+            lock_timeout_seconds=1.0,
+        )
 
         details["writer_a"] = results_a
         details["writer_b"] = results_b
+        details["recovery_status"] = recovery.status
         details["errors"] = errors
 
         # read final state for consistency check
@@ -475,12 +526,12 @@ class AcidExperimentRunner:
 
         details["final_title"] = final_title
 
-        # Success: both committed in serial order, OR one timed out — data is consistent
-        a_ok = len(results_a) == 1
-        b_ok = len(results_b) == 1 and results_b[0] in ("committed", "timeout")
-        data_ok = final_title in (f"{sub_tag}_slow", f"{sub_tag}_fast", sub_tag)
+        # Success: holder acquired lock, competitor timed out, and recovery update succeeds.
+        a_ok = len(results_a) == 1 and results_a[0] == "held"
+        b_ok = len(results_b) == 1 and results_b[0] == "timeout"
+        data_ok = final_title == f"{sub_tag}_recovered"
 
-        passed = a_ok and b_ok and data_ok and not errors
+        passed = a_ok and b_ok and recovery.status == "committed" and data_ok and not errors
         self._cleanup_tag(sub_tag, field_locations, mysql_client, mongo_client)
         return passed, details
 
