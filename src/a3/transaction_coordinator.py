@@ -90,7 +90,7 @@ class TransactionCoordinator:
         try:
             sql_result = self.crud_engine.execute(sql_plan, mysql_client, mongo_client)
 
-            if sql_result.get("status") == "error":
+            if not self._is_write_result_success(sql_result):
                 original_rollback()
                 return TransactionResult(
                     status="rolled_back",
@@ -104,7 +104,7 @@ class TransactionCoordinator:
             mongo_snapshot = self._snapshot_mongo(mongo_client, mongo_plan, operation)
             mongo_result = self.crud_engine.execute(mongo_plan, mysql_client, mongo_client)
 
-            if mongo_result.get("status") == "error":
+            if not self._is_write_result_success(mongo_result):
                 original_rollback()
                 self._compensate_mongo(mongo_client, mongo_snapshot)
                 all_errors = sql_result.get("errors", []) + mongo_result.get("errors", [])
@@ -121,9 +121,8 @@ class TransactionCoordinator:
             original_commit()
 
             merged_errors = sql_result.get("errors", []) + mongo_result.get("errors", [])
-            tx_status = self._status_from_results(sql_result, mongo_result)
             return TransactionResult(
-                status=tx_status,
+                status="committed",
                 operation=operation.value,
                 sql_result=sql_result,
                 mongo_result=mongo_result,
@@ -169,11 +168,10 @@ class TransactionCoordinator:
         )
 
     @staticmethod
-    def _status_from_results(*results: dict[str, Any]) -> str:
-        statuses = [str((result or {}).get("status", "")).lower() for result in results]
-        if any(status == "error" for status in statuses):
-            return "error"
-        return "committed"
+    def _is_write_result_success(result: dict[str, Any]) -> bool:
+        status = str((result or {}).get("status", "")).lower()
+        errors = list((result or {}).get("errors", []))
+        return status == "success" and not errors
 
     @staticmethod
     def _sql_only_plan(plan: QueryPlan) -> QueryPlan:
