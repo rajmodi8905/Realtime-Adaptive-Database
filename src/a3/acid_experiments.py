@@ -418,32 +418,59 @@ class AcidExperimentRunner:
 
         results_a: list[str] = []
         results_b: list[str] = []
+        durations_a: list[float] = []
+        durations_b: list[float] = []
         errors: list[str] = []
         barrier = threading.Barrier(2, timeout=10)
+        slow_execute_started = threading.Event()
+        slow_thread_ident: dict[str, int | None] = {"value": None}
+        original_mysql_execute = mysql_client.execute
+        hold_delay = 0.25
+        delay_used = {"value": False}
+
+        def delayed_mysql_execute(query, params=None):
+            if (
+                slow_thread_ident["value"] is not None
+                and threading.get_ident() == slow_thread_ident["value"]
+                and not delay_used["value"]
+            ):
+                delay_used["value"] = True
+                slow_execute_started.set()
+                time.sleep(hold_delay)
+            return original_mysql_execute(query, params)
 
         def slow_writer() -> None:
             """Holds the lock for a noticeable duration."""
             try:
+                slow_thread_ident["value"] = threading.get_ident()
+                mysql_client.execute = delayed_mysql_execute
                 barrier.wait()
+                start = time.perf_counter()
                 self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
                     {"updates": {title_field: f"{sub_tag}_slow"}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
+                durations_a.append(time.perf_counter() - start)
                 results_a.append("committed")
             except Exception as exc:
                 errors.append(f"slow_writer: {exc}")
+            finally:
+                mysql_client.execute = original_mysql_execute
 
         def competing_writer() -> None:
             """Attempts a write on the same entity — should be serialized."""
             try:
                 barrier.wait()
+                slow_execute_started.wait(timeout=5)
                 time.sleep(0.01)  # ensure it arrives slightly after
+                start = time.perf_counter()
                 self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
                     {"updates": {title_field: f"{sub_tag}_fast"}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
+                durations_b.append(time.perf_counter() - start)
                 results_b.append("committed")
             except LockTimeoutError:
                 results_b.append("timeout")
@@ -457,6 +484,8 @@ class AcidExperimentRunner:
 
         details["writer_a"] = results_a
         details["writer_b"] = results_b
+        details["writer_a_duration_s"] = round(durations_a[0], 4) if durations_a else None
+        details["writer_b_duration_s"] = round(durations_b[0], 4) if durations_b else None
         details["errors"] = errors
 
         # read final state for consistency check
@@ -478,9 +507,12 @@ class AcidExperimentRunner:
         # Success: both committed in serial order, OR one timed out — data is consistent
         a_ok = len(results_a) == 1
         b_ok = len(results_b) == 1 and results_b[0] in ("committed", "timeout")
+        waited_ok = True
+        if results_b and results_b[0] == "committed":
+            waited_ok = bool(durations_b and durations_b[0] >= (hold_delay - 0.05))
         data_ok = final_title in (f"{sub_tag}_slow", f"{sub_tag}_fast", sub_tag)
 
-        passed = a_ok and b_ok and data_ok and not errors
+        passed = a_ok and b_ok and waited_ok and data_ok and not errors
         self._cleanup_tag(sub_tag, field_locations, mysql_client, mongo_client)
         return passed, details
 

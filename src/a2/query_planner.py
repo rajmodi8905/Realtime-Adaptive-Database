@@ -64,6 +64,12 @@ class QueryPlanner:
                 mongo_by_collection.setdefault(location.table_or_collection, set()).add(location.column_or_path)
 
         sql_where, mongo_filter = self._split_filters(filters, field_index)
+        join_keys = self._infer_join_keys(field_locations)
+        shared_join_filters = {
+            key: value
+            for key, value in filters.items()
+            if key in join_keys
+        }
 
         sql_queries = [
             {
@@ -83,7 +89,10 @@ class QueryPlanner:
                 "type": "find",
                 "collection": collection,
                 "projection": sorted(paths),
-                "filter": mongo_filter.get(collection, {}),
+                "filter": {
+                    **shared_join_filters,
+                    **mongo_filter.get(collection, {}),
+                },
                 "limit": limit,
                 "sort": sort,
             }
@@ -92,11 +101,13 @@ class QueryPlanner:
 
         merge_strategy = {
             "mode": "keyed_merge",
-            "join_keys": self._infer_join_keys(field_locations),
+            "join_keys": join_keys,
             "requested_fields": requested_fields,
             "source_priority": ["sql", "mongo"],
             "conflict_policy": "prefer_sql",
             "missing_field_policy": "omit",
+            "global_limit": limit,
+            "global_offset": offset,
         }
 
         return QueryPlan(
