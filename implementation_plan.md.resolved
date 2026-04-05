@@ -1,0 +1,50 @@
+# Schema Explorer — Draggable Graph Layout
+
+The Entity Browser currently lays out SQL tables and MongoDB collections in a flexbox row. SVG connectors draw bezier curves between them, but the "1:N" and "ref" cardinality badges overlap with each other and with the node cards because all curves share similar midpoints. The user wants the nodes to be **movable/draggable** like a graph, so they can rearrange them to avoid overlap.
+
+## Proposed Changes
+
+### Entity Browser
+
+#### [MODIFY] [EntityBrowser.jsx](file:///Users/rajmodi/Documents/4th%20sem/database/Realtime-Adaptive-Database/dashboard/frontend/src/views/EntityBrowser.jsx)
+
+Complete rewrite of the [SchemaPanel](file:///Users/rajmodi/Documents/4th%20sem/database/Realtime-Adaptive-Database/dashboard/frontend/src/views/EntityBrowser.jsx#261-362) and [Connector](file:///Users/rajmodi/Documents/4th%20sem/database/Realtime-Adaptive-Database/dashboard/frontend/src/views/EntityBrowser.jsx#187-260) components to support a draggable graph layout:
+
+1. **Draggable node cards** — use `framer-motion`'s `drag` prop (already a dependency) on each [SchemaNode](file:///Users/rajmodi/Documents/4th%20sem/database/Realtime-Adaptive-Database/dashboard/frontend/src/views/EntityBrowser.jsx#77-186). Each node gets an absolute position inside a fixed-height canvas container. Dragging updates the node's [(x, y)](file:///Users/rajmodi/Documents/4th%20sem/database/Realtime-Adaptive-Database/dashboard/frontend/src/views/EntityBrowser.jsx#266-269) state and the connectors re-render live.
+
+2. **Auto-layout initial positions** — compute initial [(x, y)](file:///Users/rajmodi/Documents/4th%20sem/database/Realtime-Adaptive-Database/dashboard/frontend/src/views/EntityBrowser.jsx#266-269) for each node using a simple force-directed-style row layout:
+   - Root/primary table on the left, child tables spread to the right
+   - Vertical offset between multiple children to prevent stacking
+   - This eliminates overlap on first render
+
+3. **Improved Connector component** — rework the SVG connectors to:
+   - Compute connection points from actual node positions (not DOM refs/getBoundingClientRect)
+   - Stagger cardinality badge positions when multiple connectors exist between the same pair direction, adding vertical offset per connector index
+   - Use a unique gradient ID per connector to avoid SVG `defs` conflicts
+
+4. **Canvas container** — each panel (SQL, Mongo) becomes a scrollable canvas (`overflow: auto`) with a minimum width/height so nodes can be dragged freely. A subtle grid/dot pattern background gives the "graph" feel.
+
+5. **Keep existing features**: expanding node details, field filter, relationship key legend, etc.
+
+**Key design decisions:**
+- No external library needed — framer-motion's `drag` + `dragMomentum={false}` gives clean drag UX
+- Connectors listen to node position state (not DOM rects) for reliability
+- Each panel independently manages its node positions
+
+## Verification Plan
+
+### Browser Tests
+
+1. Start the dashboard dev server:
+   ```bash
+   cd "/Users/rajmodi/Documents/4th sem/database/Realtime-Adaptive-Database/dashboard/frontend"
+   npm run dev
+   ```
+2. Open the Schema Explorer page in the browser
+3. Verify:
+   - SQL tables and MongoDB collections render as graph nodes on a canvas
+   - Nodes can be dragged to new positions
+   - Connector lines and cardinality labels update in real time during drag
+   - No labels overlap by default (auto-layout spaces them out)
+   - Clicking a node still expands field details
+   - Relationship key legend still shows at the top of each panel

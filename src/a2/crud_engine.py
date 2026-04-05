@@ -53,6 +53,8 @@ class CrudEngine:
         join_keys = list(merge_strategy.get("join_keys") or [])
         source_priority = list(merge_strategy.get("source_priority") or ["sql", "mongo"])
         conflict_policy = str(merge_strategy.get("conflict_policy", "prefer_sql")).lower()
+        global_limit = merge_strategy.get("global_limit")
+        global_offset = merge_strategy.get("global_offset")
 
         errors: list[str] = []
         sql_rows: list[dict[str, Any]] = []
@@ -255,6 +257,7 @@ class CrudEngine:
 
         merged_flat_rows: list[dict[str, Any]] = []
         by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+        by_key_field_source: dict[tuple[Any, ...], dict[str, str]] = {}
 
         sources = {
             "sql": sql_flat,
@@ -265,28 +268,87 @@ class CrudEngine:
             # Apply lower-priority first, then preferred source overwrites on conflict.
             apply_order = list(reversed(source_priority))
             seen_order: list[tuple[Any, ...]] = []
+            unkeyed_rows: list[dict[str, Any]] = []
 
             for src in apply_order:
                 for row in sources.get(src, []):
                     key = row_key(row)
                     if key is None:
-                        merged_flat_rows.append(dict(row))
+                        unkeyed_rows.append(dict(row))
                         continue
                     if key not in by_key:
                         by_key[key] = {jk: row.get(jk) for jk in effective_join_keys if jk in row}
+                        by_key_field_source[key] = {
+                            jk: src for jk in effective_join_keys if jk in row
+                        }
                         seen_order.append(key)
 
                     target = by_key[key]
+                    field_source = by_key_field_source[key]
                     for f, v in row.items():
-                        if f in join_keys:
+                        if f in effective_join_keys:
                             continue
-                        if conflict_policy == "prefer_sql" and src == "mongo" and f in target:
+
+                        if f not in target:
+                            target[f] = v
+                            field_source[f] = src
                             continue
-                        target[f] = v
+
+                        previous_source = field_source.get(f)
+
+                        # Cross-source conflict resolution.
+                        if previous_source and previous_source != src:
+                            if conflict_policy == "prefer_sql":
+                                if src == "mongo":
+                                    continue
+                                target[f] = v
+                                field_source[f] = src
+                                continue
+                            target[f] = v
+                            field_source[f] = src
+                            continue
+
+                        # Same-source repeated values: aggregate into arrays.
+                        existing_value = target.get(f)
+                        if existing_value == v:
+                            continue
+
+                        if isinstance(existing_value, list):
+                            if v not in existing_value:
+                                existing_value.append(v)
+                        else:
+                            target[f] = [existing_value, v]
 
             merged_flat_rows.extend(by_key[k] for k in seen_order)
+            merged_flat_rows.extend(unkeyed_rows)
         else:
             merged_flat_rows = sql_flat + mongo_flat
+
+        # Build alias map from physical keys emitted by backend queries to logical field paths.
+        field_aliases: dict[str, str] = {}
+        for query in plan.sql_queries or []:
+            table = query.get("table")
+            columns = list(query.get("columns") or [])
+            for col in columns:
+                if not col:
+                    continue
+                candidate_fields = [
+                    field
+                    for field in requested_fields
+                    if field == col or field.endswith(f".{col}")
+                ]
+                logical_field = candidate_fields[0] if len(candidate_fields) == 1 else col
+                # Common SQL flattened key shapes observed in the pipeline.
+                field_aliases.setdefault(col, logical_field)
+                if table:
+                    field_aliases.setdefault(f"{table}.{col}", logical_field)
+
+        for query in plan.mongo_queries or []:
+            projection = list(query.get("projection") or [])
+            for path in projection:
+                if not path:
+                    continue
+                field_aliases.setdefault(path, path)
 
         # Project final output fields.
         records: list[dict[str, Any]] = []
@@ -296,6 +358,14 @@ class CrudEngine:
                 for field in requested_fields:
                     if field in flat:
                         set_dotted(out, field, flat[field])
+                        continue
+
+                    # Fallback: resolve via physical->logical aliases.
+                    for raw_key, value in flat.items():
+                        mapped = field_aliases.get(raw_key)
+                        if mapped == field:
+                            set_dotted(out, field, value)
+                            break
                 for key in effective_join_keys:
                     if key in flat and key not in requested_fields:
                         out[key] = flat[key]
@@ -303,7 +373,16 @@ class CrudEngine:
                 out = {}
                 for field, value in flat.items():
                     set_dotted(out, field, value)
-            records.append(out)
+            if out:
+                records.append(out)
+
+        # Apply global pagination to final reconstructed rows.
+        if not isinstance(global_offset, int) or global_offset < 0:
+            global_offset = 0
+        if isinstance(global_limit, int) and global_limit >= 0:
+            records = records[global_offset:global_offset + global_limit]
+        elif global_offset:
+            records = records[global_offset:]
 
         if errors and not records:
             return {
