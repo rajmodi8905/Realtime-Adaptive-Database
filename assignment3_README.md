@@ -1,195 +1,162 @@
-# Assignment 3 — Concurrency Control & ACID Transactions
+# Assignment 3 - Logical Dashboard & Transactional Validation
 
-This module (`src/a3/`) adds **transaction coordination** and **concurrency control** to the hybrid SQL/MongoDB database framework, ensuring all CRUD operations satisfy full ACID guarantees.
+An architectural extension of the Assignment 2 metadata-driven hybrid database that introduces a **Logical Dashboard**, multi-backend **Transaction Coordination**, concurrency control via **Reader/Writer Locking**, and robust **ACID Validation Experiments**.
 
----
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                Assignment3Pipeline                       │
-│              (src/a3/orchestrator.py)                     │
-├──────────┬──────────┬──────────┬────────────────────────┤
-│ Session  │ Logical  │ ACID     │ Transaction            │
-│ Manager  │ Recon-   │ Experi-  │ Coordinator            │
-│          │ structor │ ments    │  + ConcurrencyManager  │
-└──────────┴──────────┴──────────┴────────────────────────┘
-                          │
-              ┌───────────┴───────────┐
-              │  Assignment2Pipeline  │
-              │   (CrudEngine, etc.)  │
-              └───────────┬───────────┘
-              ┌───────────┴───────────┐
-              │   MySQL     MongoDB   │
-              └───────────────────────┘
-```
+Video explanation: [Watch here](https://drive.google.com/file/d/1lI_NIiaVbkQX4OpkC2DuhKUpDkCOfwT1/view?usp=sharing)
 
 ---
 
-## ACID Property Implementation
+## How A2 Fits In (Brief Context)
 
-### A — Atomicity
+Assignment 2 README: [Metadata-Driven Hybrid Storage Pipeline](Assignment2_README.md)
 
-**File:** [`src/a3/transaction_coordinator.py`](src/a3/transaction_coordinator.py)
+Assignment 2 built the `Assignment2Pipeline` that successfully:
+1. Generates dual normalized schemas (SQL 3NF and MongoDB Embedded collections) automatically based on metadata definitions.
+2. Persists cross-database tracking using `field_locations.json`.
+3. Excutes physical query breakdowns natively per sub-system.
 
-| Backend | Mechanism |
-|---------|-----------|
-| **MySQL** | Auto-commit is **suppressed** before execution (`conn.commit = lambda: None`). After both backends succeed, a single `COMMIT` is issued. On any failure, `ROLLBACK` is called. |
-| **MongoDB** | Standalone MongoDB lacks multi-document transactions. A **compensating transaction** pattern is used: documents are **snapshotted** before mutation (`_snapshot_mongo`), and restored on failure (`_compensate_mongo`). For inserts, the inserted docs are deleted; for updates, the originals are restored; for deletes, the originals are re-inserted. |
-
-**How it works:**
-1. SQL operations execute first (with commit suppressed)
-2. MongoDB documents are snapshotted
-3. MongoDB operations execute
-4. If either fails → MySQL `ROLLBACK` + MongoDB compensating restore
-5. If both succeed → MySQL `COMMIT`
+A3 seamlessly wraps the A2 backbone. It coordinates the cross-backend queries atomistically (so a failure midway rolls everything back) and abstracts the complex mapping completely away behind a "Logical Entity" layer exposed to a React-based interactive web dashboard.
 
 ---
 
-### C — Consistency
+## Project Structure
 
-**File:** [`src/a3/transaction_coordinator.py`](src/a3/transaction_coordinator.py), MySQL schema setup in `src/storage/mysql_client.py`
-
-Consistency is enforced through:
-- **MySQL schema constraints**: `PRIMARY KEY`, `NOT NULL`, `UNIQUE`, and `FOREIGN KEY` constraints reject invalid data
-- **MongoDB schema validators**: Applied during collection creation to enforce document shape
-- **Upsert semantics**: Duplicate inserts are handled gracefully (upsert or rejection) without data corruption
-- **All operations go through the transaction coordinator**, ensuring no raw writes bypass constraint checks
-
----
-
-### I — Isolation
-
-**Files:**
-- [`src/a3/concurrency_manager.py`](src/a3/concurrency_manager.py) — Lock manager
-- [`src/a3/transaction_coordinator.py`](src/a3/transaction_coordinator.py) — Lock integration
-
-**Mechanism:** Pessimistic per-entity **read/write locking** using threading primitives.
-
-| Lock Type | Semantics |
-|-----------|-----------|
-| **Shared (Read)** | Multiple readers can hold the lock concurrently |
-| **Exclusive (Write)** | Writer blocks until all readers and prior writers release; new readers are blocked while a writer holds the lock |
-| **Write Priority** | Pending writers block new readers to prevent write starvation |
-| **Timeout** | Default 5s; raises `LockTimeoutError` to prevent deadlocks |
-
-**Lock Key Extraction:** The system derives a logical lock key from query payloads:
-1. `filters` → e.g., `entity:username=alice`
-2. First record in `records` list (for CREATE)
-3. `updates` dict
-4. Global fallback key
-
-**Integration:** Every call to `execute_in_transaction()` acquires the appropriate lock **before** any work begins and releases it in a `finally` block — guaranteeing release even on exceptions.
-
----
-
-### D — Durability
-
-**File:** [`src/a3/transaction_coordinator.py`](src/a3/transaction_coordinator.py)
-
-| Backend | Mechanism |
-|---------|-----------|
-| **MySQL** | `conn.commit()` flushes the transaction to InnoDB on disk |
-| **MongoDB** | Default write concern (`w:1`) ensures the write is acknowledged by the primary before returning |
-
-Once `execute_in_transaction()` returns `status="committed"`, the data is persisted to disk in both backends and survives server restarts.
-
----
-
-## File Structure
-
-```
-src/a3/
-├── __init__.py                  # Package exports
-├── contracts.py                 # TransactionResult, AcidTestResult, etc.
-├── concurrency_manager.py       # Per-entity read/write lock manager
-├── transaction_coordinator.py   # Multi-backend transaction coordination
-├── acid_experiments.py          # ACID validation experiment suite
-├── orchestrator.py              # Assignment3Pipeline (top-level entry point)
-├── logical_reconstructor.py     # Unified entity view across backends
-└── session_manager.py           # Schema/connection state management
-
-src/storage/
-└── mysql_client.py              # Thread-safe MySQL client (threading.Lock added)
+```text
+├── src/
+│   ├── a3/                                  # Assignment 3 modules
+│   │   ├── orchestrator.py                  # A3 Pipeline controller
+│   │   ├── contracts.py                     # Shared transaction types (AcidTestResult, etc.)
+│   │   ├── transaction_coordinator.py       # Cross-backend atomicity and rollback manager
+│   │   ├── concurrency_manager.py           # Thread-safe entity lock timeout mechanism
+│   │   ├── logical_reconstructor.py         # Merges SQL + Mongo arrays into single JSON entities
+│   │   ├── session_manager.py               # Metadata and active session health service
+│   │   └── acid_experiments.py              # Suite verifying Atomicity, Consistency, etc.
+│   │
+│   ├── a2/                                  # A2 Schema Normalization & Query Planner
+│   └── classify/                            # A1 Type Detection & Router
+│
+├── dashboard/                               # FastAPI Backend & React Frontend Dashboard
+│   ├── api_server.py                        # FastAPI routes serving logical queries
+│   └── frontend/
+│       ├── src/
+│       │   ├── views/EntityBrowser.jsx      # Abstract Data Table & ER-Diagram UI
+│       │   ├── views/QueryWorkspace.jsx     # CRUD Simulator UI
+│       │   ├── views/AcidValidation.jsx     # Experiment Executor UI
+│       │   └── components/SessionBar.jsx    # Session metadata banner
+│       └── package.json
+│
+├── report.tex                               # Academic Submission Report
+└── Assignment3_README.md                    # This document
 ```
 
 ---
 
-## Test Files
+## Core Logic (Per File)
 
-### 1. Unit Tests — `test_concurrency.py`
+### `src/a3/orchestrator.py` - Pipeline Controller
+Entry point for the A3 application layer. Binds the `TransactionCoordinator` to incoming requests and supplies the dashboard's FastAPI server with logical endpoints:
+- `get_session_info()`: Fetches database active health.
+- `execute_logical_query()`: Handles dashboard CRUD payloads and fires them transactionally.
+- `run_acid_experiments()`: Kicks off the synthetic workload verification threads.
 
-Tests the lock primitives in isolation (no database required):
+### `src/a3/transaction_coordinator.py` - Atomicity Layer
+Ensures logical queries operating across two unlinked database engines execute with **All-or-Nothing** semantics:
+- Deterministic Ordering: SQL `INSERT` commands strictly precede Mongo insertions establishing FK invariants securely; Mongo `DELETE`s securely precede SQL cascades.
+- Failure Detection: Catches mid-operation errors and reliably performs reverse-topological rollbacks (e.g., executing native `ROLLBACK` for MySQL transactions and manual compensatory drops for MongoDB artifacts).
 
-| Test | What it validates |
-|------|-------------------|
-| Exclusive lock blocks second writer | Two threads can't hold write lock simultaneously |
-| Shared reads are concurrent | Multiple readers don't block each other |
-| Write blocks readers | A writer blocks incoming readers |
-| Write priority over readers | Pending writers get priority over new readers |
-| Lock timeout raises error | `LockTimeoutError` raised when timeout expires |
-| Lock key extraction | Correct keys derived from query payloads |
+### `src/a3/concurrency_manager.py` - Isolation Layer
+Shields multi-threaded requests from corrupting shared data leveraging dynamic Entity locks:
+- Utilizes Reader-Writer locks prioritizing exclusive write locks per extracted logical ID boundary (e.g. `username`).
+- Protects against deadlocks naturally through a robust `LockTimeoutError` (defaulting to 5 seconds) rather than graphing cyclic dependencies.
 
-**Run:**
+### `src/a3/logical_reconstructor.py` - Hydration Layer
+Abstracts physical implementation mapping entirely away from the end user.
+- Utilizes `keyed_merge` mechanics to group split representations back together securely targeting the parent index (`username` / `root_entity`).
+- Formats deeply nested Mongo arrays inside standard mapped JSON structures identically outputting identical entity definitions cleanly to the dashboard.
+
+### `src/a3/session_manager.py` - Health Monitoring
+Continuously pings the MySQL & MongoDB client sockets determining current connection uptimes, parsing available table counts, active schemas, and database versions to power the top abstraction banner of the Dashboard.
+
+### `src/a3/acid_experiments.py` - Synthetic Validation
+Runs 5 distinct experiments natively returning `AcidTestResult` objects indicating PASS/FAIL status along with granular `details`.
+
+**1. Atomicity**
+Injects a fake connectivity exception deep inside the MongoDB client mid-transaction.
+*Example Outcome*: `SQL rollback verification (0 rows), Mongo pre-commit abort (0 documents), transaction.rolled_back = True`.
+
+**2. Consistency**
+Forces an array constraint violation by pushing identical `username` primary keys simultaneously.
+*Example Outcome*: Database driver strictly rejects the operation (`status: failed`); the overarching transaction coordinator intercepts it.
+
+**3. Isolation**
+Throws heavy multi-threading collision tasks simultaneously targeting identical Logical entities.
+*Example Outcome*:
+- **Lost Updates**: Two threads write `title_A` and `title_B`. Output strictly serializes to one final survivor without truncation.
+- **Dirty Reads**: A secondary reader queries the document *during* the writer's commit latency; Output correctly returns the previous unmodified state.
+
+**4. Durability**
+Disconnects both Database engines entirely (`mysql_client.disconnect()`, `mongo_client.disconnect()`) immediately following a transaction commit, then restores them to prove data remained permanently preserved.
+
+**5. Reconstruction**
+Syntactically merges massive arrays spanning dual backends.
+*Example Outcome*: The payload returns full JSON without exposing raw internal keys or generating empty objects.
+
+### `dashboard/...` - The Logical Dashboard Interface
+A complete, un-opinionated FastAPI + React Vite application enforcing the primary abstraction-first Assignment 3 architectural rule (exposing zero SQL tables/relations directly):
+- `EntityBrowser.jsx`: Maps logical data columns via `extractValue()` dynamically bypassing internal boundaries. Generates an exclusive Logical **ER-Diagram** charting topological compositions without directly charting DB instances.
+- `SessionBar.jsx`: Strictly obfuscates physical schemas.
+
+---
+
+## Setup & Execution
+
+### Prerequisites
+- Python 3.12+
+- Docker & Docker Compose
+- Node 20 (or use Docker compiler)
+
+### 1. Launch Databases
 ```bash
-python test_concurrency.py
-```
-
-### 2. End-to-End Tests — `test_concurrency_e2e.py`
-
-Full integration tests that **bootstrap the database from scratch** (empty DB → schema → records → tests):
-
-| Test | ACID Property | What it validates |
-|------|---------------|-------------------|
-| 1. Lost Update Prevention | **Isolation** | 2 concurrent writers on same record → final value is one of the two (serialized, not lost) |
-| 2. 5-Way Write Contention | **Isolation** | 5 threads update same record → all 5 commit, final value is one of the 5 |
-| 3. Dirty Read Prevention | **Isolation** | Reader during write sees only committed state, never in-flight data |
-| 4. Concurrent Reads | **Isolation** | 4 parallel readers complete without blocking each other |
-| 5. Read/Write Isolation | **Isolation** | Concurrent read + write on same entity both succeed, reader sees consistent state |
-| 6. Lock Key Observability | **Isolation** | `TransactionResult.lock_key` is populated correctly |
-| 7. Full ACID Suite | **All** | Runs `AcidExperimentRunner.run_all()` which tests Atomicity, Consistency, Isolation (3 sub-tests), and Durability |
-
-**Run:**
-```bash
-# Start databases
 docker-compose up -d
-# Wait for MySQL to be ready
-sleep 10
-# Run tests (bootstraps DB from scratch)
-rm -rf metadata/
-python test_concurrency_e2e.py
+docker ps
 ```
+Ensure `adaptive_db_mysql` and `adaptive_db_mongodb` are actively linked.
 
-**Expected output:**
-```
-Total: 24  |  Passed: 24  |  Failed: 0
-✅ ALL 24 TESTS PASSED — concurrency control is working correctly
-```
-
----
-
-## Quick Start
-
+### 2. Compile React (Docker Method)
+Compile the dashboard frontend natively via Node volume-mounting to avoid local dependency clutter:
 ```bash
-# 1. Start databases
-docker-compose up -d
-
-# 2. Set MySQL password
-echo "MYSQL_PASSWORD=rootpassword" > .env
-
-# 3. Run concurrency tests
-sleep 10 && rm -rf metadata/ && python test_concurrency_e2e.py
+docker run --rm -v "${PWD}/dashboard:/dashboard" -w /dashboard/frontend node:20 sh -c "npm install && npm run build"
 ```
+
+### 3. Launch the Application Server
+Run the FastAPI Server directly supplying the logical API routes to your compiled React app:
+```bash
+python dashboard/api_server.py
+```
+**Access the Dashboard:** [http://localhost:8080](http://localhost:8080)
 
 ---
 
-## Key Design Decisions
+## Utilizing the Environment (User Guide)
 
-1. **Pessimistic Locking** (vs. optimistic): Chosen for guaranteed serializability. In a hybrid SQL/MongoDB system, optimistic approaches would require cross-backend version tracking, adding significant complexity.
+The central workflow happens directly inside the Web Dashboard:
 
-2. **Per-Entity Lock Scope**: Locks are keyed by logical entity (e.g., `username=alice`), not by table/collection. This serializes cross-backend operations for specific records while allowing unrelated records to proceed in parallel.
+1. **Bootstrap Initialization**:
+   Navigate to the target subtab to cleanly flush outdated persistent metadata configurations and auto-generate clean starting schemas for `event` relationships across both database engines.
+2. **Browse Logical Topologies**:
+   Target the **Entity Browser** to browse visually mapped hierarchies un-tainted by backend terminology. Select between the conceptual *ER-Diagram* abstraction and the live *Data Instances* explorer.
+3. **Trigger Transactions**:
+   Utilize the **Query Workspace** typing structured JSON instructions. Submitting identical data blocks repetitively naturally triggers concurrency restrictions correctly halting collisions.
+4. **Stress Testing**:
+   Click **ACID Validation** to watch the Transaction Coordinator gracefully detect engineered catastrophic outages, enforcing total system rollbacks actively verifiable using UI metrics.
 
-3. **Thread-Safe MySQL Client**: `pymysql` is not thread-safe. A `threading.Lock` was added to `MySQLClient` to serialize all operations on the connection, preventing packet interleaving corruption during concurrent transactions.
+---
 
-4. **Compensating Transactions for MongoDB**: Since standalone MongoDB doesn't support multi-document transactions, we snapshot documents before mutation and restore them on failure — achieving atomicity at the application level.
+## Allowed vs. Not Allowed
+
+| Feature | Supported | System Policy Notes |
+|---------|-----------|--------------------|
+| Read physical SQL lists via UI | **No**  | Strictly breaches Logical Abstraction definitions. |
+| Automatic Rollback Execution   | **Yes** | Fully native execution protecting data limits cleanly. |
+| Cascading Multi-DB Deletes     | **Yes** | Supported logically navigating internal `field_locations.json`. |
+| Fine Field-Level Locking       | **No**  | Concurrency architecture exclusively isolates strictly at the Entity limit. |
