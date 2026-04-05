@@ -4,13 +4,14 @@ async function post(url, body = {}) {
   const res = await fetch(`${API_BASE}${url}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
     body: JSON.stringify(body),
   });
   return res.json();
 }
 
 async function get(url) {
-  const res = await fetch(`${API_BASE}${url}`);
+  const res = await fetch(`${API_BASE}${url}`, { cache: 'no-store' });
   return res.json();
 }
 

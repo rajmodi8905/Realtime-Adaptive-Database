@@ -110,6 +110,36 @@ def _ensure_pipeline() -> Assignment3Pipeline:
     return pipeline
 
 
+def _reset_backend_data(p: Assignment3Pipeline) -> None:
+    """Clear all SQL tables and Mongo collections for a deterministic bootstrap snapshot."""
+    p.ensure_connected()
+
+    mysql_client = p.a2.a1_pipeline._mysql_client
+    mysql_client.execute("SET FOREIGN_KEY_CHECKS=0")
+    try:
+        rows = mysql_client.fetch_all("SHOW TABLES")
+        table_names: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for value in row.values():
+                if value:
+                    table_names.append(str(value))
+                    break
+        for table_name in table_names:
+            mysql_client.execute(f"DROP TABLE IF EXISTS `{table_name}`")
+    finally:
+        mysql_client.execute("SET FOREIGN_KEY_CHECKS=1")
+
+    mongo_client = p.a2.a1_pipeline._mongo_client
+    mongo_raw_client = getattr(mongo_client, "client", None)
+    db_name = getattr(mongo_client, "database", None)
+    if mongo_raw_client is not None and db_name:
+        db = mongo_raw_client[db_name]
+        for coll_name in db.list_collection_names():
+            db.drop_collection(coll_name)
+
+
 # ── lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -181,6 +211,13 @@ async def bootstrap(request: Request):
             pipeline.a2.run_ingestion(records)
 
             # Phase 3: Build storage strategy
+            pipeline.a2.build_storage_strategy(_registration)
+
+            # Remove transient A1-ingested/stale data so only A2 transactional
+            # inserts define the final logical snapshot shown in the dashboard.
+            _reset_backend_data(pipeline)
+
+            # Rebuild storage structures after reset (tables/collections dropped).
             pipeline.a2.build_storage_strategy(_registration)
 
             # Phase 4: Insert records via transactional CRUD

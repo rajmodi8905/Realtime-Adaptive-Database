@@ -65,6 +65,29 @@ class QueryPlanner:
 
         sql_where, mongo_filter = self._split_filters(filters, field_index)
         join_keys = self._infer_join_keys(field_locations)
+        sql_join_columns = self._resolve_sql_join_columns(join_keys, field_locations)
+        mongo_join_paths = self._resolve_mongo_join_paths(join_keys, field_locations)
+
+        for table, columns in sql_join_columns.items():
+            sql_by_table.setdefault(table, set()).update(columns)
+        for collection, paths in mongo_join_paths.items():
+            mongo_by_collection.setdefault(collection, set()).update(paths)
+
+        # Ensure every source includes its row-level join columns so keyed merge
+        # can align SQL/Mongo fragments coming from child tables/collections.
+        for loc in field_locations:
+            backend = loc.backend.lower()
+            if backend in ("sql", "both"):
+                table = loc.table_or_collection
+                for join_key in (loc.join_keys or []):
+                    if join_key:
+                        sql_by_table.setdefault(table, set()).add(join_key)
+            if backend in ("mongo", "both"):
+                collection = loc.table_or_collection
+                for join_key in (loc.join_keys or []):
+                    if join_key:
+                        mongo_by_collection.setdefault(collection, set()).add(join_key)
+
         shared_join_filters = {
             key: value
             for key, value in filters.items()
@@ -77,8 +100,8 @@ class QueryPlanner:
                 "table": table,
                 "columns": sorted(columns),
                 "where": sql_where.get(table, {}),
-                "limit": limit,
-                "offset": offset,
+                "limit": None,
+                "offset": None,
                 "sort": sort,
             }
             for table, columns in sorted(sql_by_table.items())
@@ -93,7 +116,7 @@ class QueryPlanner:
                     **shared_join_filters,
                     **mongo_filter.get(collection, {}),
                 },
-                "limit": limit,
+                "limit": None,
                 "sort": sort,
             }
             for collection, paths in sorted(mongo_by_collection.items())
@@ -725,6 +748,34 @@ class QueryPlanner:
             join_keys = [k for k in fallbacks if k in known_fields]
 
         return join_keys
+
+    @staticmethod
+    def _resolve_sql_join_columns(
+        join_keys: list[str],
+        field_locations: list[FieldLocation],
+    ) -> dict[str, set[str]]:
+        sql_join_columns: dict[str, set[str]] = {}
+        for loc in field_locations:
+            if loc.field_path not in join_keys:
+                continue
+            backend = loc.backend.lower()
+            if backend in ("sql", "both"):
+                sql_join_columns.setdefault(loc.table_or_collection, set()).add(loc.column_or_path)
+        return sql_join_columns
+
+    @staticmethod
+    def _resolve_mongo_join_paths(
+        join_keys: list[str],
+        field_locations: list[FieldLocation],
+    ) -> dict[str, set[str]]:
+        mongo_join_paths: dict[str, set[str]] = {}
+        for loc in field_locations:
+            if loc.field_path not in join_keys:
+                continue
+            backend = loc.backend.lower()
+            if backend in ("mongo", "both"):
+                mongo_join_paths.setdefault(loc.table_or_collection, set()).add(loc.column_or_path)
+        return mongo_join_paths
 
     @staticmethod
     def _resolve_requested_fields(

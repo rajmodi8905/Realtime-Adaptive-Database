@@ -749,6 +749,103 @@ textarea.input {
 
 .entity-name-btn.active::before { transform: scaleY(1); }
 
+.entity-tabs {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.entity-tab-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-family: 'Outfit', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.entity-tab-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-glow);
+}
+
+.entity-tab-btn.active {
+  background: rgba(99,102,241,0.14);
+  color: var(--accent-3);
+  border-color: var(--border-glow);
+}
+
+.er-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.er-node {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  padding: 12px;
+}
+
+.er-node-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.er-node-type {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.er-edges {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  padding: 12px;
+}
+
+.er-edges-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: var(--text-primary);
+}
+
+.er-edges-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.er-edge-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.er-edge-entity {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+}
+
+.er-edge-arrow {
+  color: var(--accent-3);
+}
+
+.er-edge-via {
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+
 /* ── Data Table ────────────────────────────────────────────────────────────── */
 .table-wrap {
   overflow-x: auto;

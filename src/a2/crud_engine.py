@@ -257,6 +257,7 @@ class CrudEngine:
 
         merged_flat_rows: list[dict[str, Any]] = []
         by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+        by_key_field_source: dict[tuple[Any, ...], dict[str, str]] = {}
 
         sources = {
             "sql": sql_flat,
@@ -277,15 +278,46 @@ class CrudEngine:
                         continue
                     if key not in by_key:
                         by_key[key] = {jk: row.get(jk) for jk in effective_join_keys if jk in row}
+                        by_key_field_source[key] = {
+                            jk: src for jk in effective_join_keys if jk in row
+                        }
                         seen_order.append(key)
 
                     target = by_key[key]
+                    field_source = by_key_field_source[key]
                     for f, v in row.items():
-                        if f in join_keys:
+                        if f in effective_join_keys:
                             continue
-                        if conflict_policy == "prefer_sql" and src == "mongo" and f in target:
+
+                        if f not in target:
+                            target[f] = v
+                            field_source[f] = src
                             continue
-                        target[f] = v
+
+                        previous_source = field_source.get(f)
+
+                        # Cross-source conflict resolution.
+                        if previous_source and previous_source != src:
+                            if conflict_policy == "prefer_sql":
+                                if src == "mongo":
+                                    continue
+                                target[f] = v
+                                field_source[f] = src
+                                continue
+                            target[f] = v
+                            field_source[f] = src
+                            continue
+
+                        # Same-source repeated values: aggregate into arrays.
+                        existing_value = target.get(f)
+                        if existing_value == v:
+                            continue
+
+                        if isinstance(existing_value, list):
+                            if v not in existing_value:
+                                existing_value.append(v)
+                        else:
+                            target[f] = [existing_value, v]
 
             merged_flat_rows.extend(by_key[k] for k in seen_order)
             merged_flat_rows.extend(unkeyed_rows)
@@ -300,10 +332,16 @@ class CrudEngine:
             for col in columns:
                 if not col:
                     continue
+                candidate_fields = [
+                    field
+                    for field in requested_fields
+                    if field == col or field.endswith(f".{col}")
+                ]
+                logical_field = candidate_fields[0] if len(candidate_fields) == 1 else col
                 # Common SQL flattened key shapes observed in the pipeline.
-                field_aliases.setdefault(col, col)
+                field_aliases.setdefault(col, logical_field)
                 if table:
-                    field_aliases.setdefault(f"{table}.{col}", col)
+                    field_aliases.setdefault(f"{table}.{col}", logical_field)
 
         for query in plan.mongo_queries or []:
             projection = list(query.get("projection") or [])
