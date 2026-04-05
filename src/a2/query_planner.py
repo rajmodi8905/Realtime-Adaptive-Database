@@ -94,6 +94,28 @@ class QueryPlanner:
             if key in join_keys
         }
 
+        # ── NEW: propagate join-key filters to ALL SQL tables that carry those FK columns.
+        # This ensures child tables (e.g. post_attachments with a username FK) also
+        # receive a WHERE clause so they don't return the full dataset at merge time.
+        if shared_join_filters:
+            # Build a quick map: column_name -> filter_value for join-key filters
+            join_col_filter: dict[str, Any] = {}
+            for jk, jv in shared_join_filters.items():
+                loc = field_index.get(jk)
+                if loc:
+                    join_col_filter[loc.column_or_path] = jv
+                else:
+                    join_col_filter[jk] = jv
+
+            for loc in field_locations:
+                if loc.backend.lower() not in ("sql", "both"):
+                    continue
+                tbl = loc.table_or_collection
+                # If a table already has explicit filters, don't overwrite them.
+                existing = sql_where.setdefault(tbl, {})
+                for col, val in join_col_filter.items():
+                    existing.setdefault(col, val)
+
         sql_queries = [
             {
                 "type": "select",
