@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -46,6 +47,7 @@ _lock = threading.Lock()
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "assignment2_schema.template.json"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+METADATA_DIR = Path(__file__).resolve().parent.parent / "metadata"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -123,8 +125,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Logical Dashboard", lifespan=lifespan)
 
+# CORS for dev mode (Vite dev server on port 5173)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Serve static files
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 
 # ── Root → serve index.html ──────────────────────────────────────────────────
@@ -199,6 +209,31 @@ async def get_session():
         return _ok(asdict(info))
     except Exception as exc:
         return _err(str(exc))
+
+
+# ── Schema Plan ──────────────────────────────────────────────────────────────
+
+@app.get("/api/schema/plan")
+async def get_schema_plan():
+    """Return sql_plan, mongo_plan and field_locations from metadata directory.
+    Read-only file access — no pipeline required."""
+    try:
+        sql_file   = METADATA_DIR / "sql_plan.json"
+        mongo_file = METADATA_DIR / "mongo_plan.json"
+        fields_file = METADATA_DIR / "field_locations.json"
+        if not sql_file.exists() or not mongo_file.exists():
+            return _err("Schema plans not found — bootstrap the database first", 404)
+        sql_plan   = json.loads(sql_file.read_text(encoding="utf-8"))
+        mongo_plan = json.loads(mongo_file.read_text(encoding="utf-8"))
+        field_locs = json.loads(fields_file.read_text(encoding="utf-8")) if fields_file.exists() else {}
+        return _ok({
+            "sql": sql_plan,
+            "mongo": mongo_plan,
+            "fields": field_locs.get("field_locations", []),
+        })
+    except Exception as exc:
+        logger.exception("schema/plan failed")
+        return _err(str(exc), 500)
 
 
 # ── Entities ──────────────────────────────────────────────────────────────────

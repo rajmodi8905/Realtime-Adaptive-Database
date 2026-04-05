@@ -42,11 +42,23 @@ pip install -r requirements.txt
 
 ## 🚀 Running the UI Dashboard
 
-After installation, immediately launch the FastAPI server tracking the Multi-Backend Pipeline:
+The dashboard consists of a FastAPI backend and a Vite+React frontend.
+
+### 1. Start the Backend API
+In the root directory, launch the FastAPI server tracking the Multi-Backend Pipeline:
 ```bash
 python -m dashboard.api_server
 ```
-**Access the dashboard by opening your browser to: [http://localhost:8080](http://localhost:8080)**
+*The backend API will run on `http://localhost:8080`*
+
+### 2. Start the Frontend Application
+In a new terminal, navigate to the frontend directory, install dependencies, and start the Vite development server:
+```bash
+cd dashboard/frontend
+npm install
+npm run dev
+```
+**Access the dashboard by opening your browser to the Local URL provided by Vite (typically [http://localhost:5173/static/](http://localhost:5173/static/))**
 
 ---
 
