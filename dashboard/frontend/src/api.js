@@ -17,6 +17,7 @@ async function get(url) {
 
 export const api = {
   bootstrap: (count) => post('/api/bootstrap', { record_count: count }),
+  bootstrapCustom: (schema, records) => post('/api/bootstrap/custom', { schema, records }),
   session: () => get('/api/session'),
   entities: () => get('/api/entities'),
   entity: (name, limit = 50, offset = 0) =>

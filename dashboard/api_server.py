@@ -74,6 +74,30 @@ def _load_registration() -> SchemaRegistration:
     )
 
 
+def _registration_from_payload(payload: dict[str, Any]) -> SchemaRegistration:
+    if not isinstance(payload, dict):
+        raise ValueError("Schema payload must be a JSON object")
+
+    json_schema = payload.get("json_schema")
+    if json_schema is None and isinstance(payload.get("schema"), dict):
+        json_schema = payload.get("schema")
+
+    # Allow passing plain JSON schema directly.
+    if json_schema is None and payload.get("type") == "object":
+        json_schema = payload
+
+    if not isinstance(json_schema, dict):
+        raise ValueError("Schema payload must include a valid 'json_schema' object")
+
+    return SchemaRegistration(
+        schema_name=str(payload.get("schema_name") or "custom_schema"),
+        version=str(payload.get("version") or "1.0.0"),
+        root_entity=str(payload.get("root_entity") or "root"),
+        json_schema=json_schema,
+        constraints=payload.get("constraints") or {},
+    )
+
+
 def _enrich_records(records: list[dict]) -> list[dict]:
     """Add nested structures (attachments + sensors) — mirrors run_pipeline.py."""
     for i, record in enumerate(records):
@@ -140,6 +164,54 @@ def _reset_backend_data(p: Assignment3Pipeline) -> None:
             db.drop_collection(coll_name)
 
 
+def _run_bootstrap_with_records(
+    registration: SchemaRegistration,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    global pipeline, _registration
+
+    # Cleanup old pipeline
+    if pipeline is not None:
+        try:
+            pipeline.close()
+        except Exception:
+            pass
+        pipeline = None
+
+    cfg = get_config()
+    MetadataStore(cfg.metadata_dir).clear()
+
+    _registration = registration
+    pipeline = Assignment3Pipeline(config=cfg)
+
+    # Phase 1: Register schema
+    pipeline.a2.register_schema(registration)
+
+    # Phase 2: Ingest/classify from provided records
+    pipeline.a2.run_ingestion(records)
+
+    # Phase 3: Build storage strategy
+    pipeline.a2.build_storage_strategy(registration)
+
+    # Remove transient A1-ingested/stale data so only A2 transactional
+    # inserts define the final logical snapshot shown in the dashboard.
+    _reset_backend_data(pipeline)
+
+    # Rebuild storage structures after reset (tables/collections dropped).
+    pipeline.a2.build_storage_strategy(registration)
+
+    # Phase 4: Insert records via transactional CRUD
+    result = pipeline.execute_transactional(
+        CrudOperation.CREATE, {"records": records}
+    )
+
+    session = pipeline.get_session_info()
+    return {
+        "create_status": result.status,
+        "session": asdict(session),
+    }
+
+
 # ── lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -183,57 +255,48 @@ async def root():
 
 @app.post("/api/bootstrap")
 async def bootstrap(request: Request):
-    global pipeline, _registration
     body = await request.json()
     record_count = body.get("record_count", 100)
     try:
         with _lock:
-            # Cleanup old pipeline
-            if pipeline is not None:
-                try:
-                    pipeline.close()
-                except Exception:
-                    pass
-                pipeline = None
-
-            cfg = get_config()
-            MetadataStore(cfg.metadata_dir).clear()
-
-            _registration = _load_registration()
-            pipeline = Assignment3Pipeline(config=cfg)
-
-            # Phase 1: Register schema
-            pipeline.a2.register_schema(_registration)
-
-            # Phase 2: Generate + enrich + ingest
-            records = pipeline.a2.generate_records(record_count, _registration)
+            registration = _load_registration()
+            generator_pipeline = Assignment3Pipeline(config=get_config())
+            records = generator_pipeline.a2.generate_records(record_count, registration)
+            generator_pipeline.close()
             records = _enrich_records(records)
-            pipeline.a2.run_ingestion(records)
-
-            # Phase 3: Build storage strategy
-            pipeline.a2.build_storage_strategy(_registration)
-
-            # Remove transient A1-ingested/stale data so only A2 transactional
-            # inserts define the final logical snapshot shown in the dashboard.
-            _reset_backend_data(pipeline)
-
-            # Rebuild storage structures after reset (tables/collections dropped).
-            pipeline.a2.build_storage_strategy(_registration)
-
-            # Phase 4: Insert records via transactional CRUD
-            result = pipeline.execute_transactional(
-                CrudOperation.CREATE, {"records": records}
-            )
-
-            session = pipeline.get_session_info()
+            summary = _run_bootstrap_with_records(registration, records)
             return _ok({
                 "message": f"Bootstrapped with {record_count} records",
-                "create_status": result.status,
-                "session": asdict(session),
+                **summary,
             })
     except Exception as exc:
         logger.exception("Bootstrap failed")
         return _err(f"Bootstrap failed: {exc}", 500)
+
+
+@app.post("/api/bootstrap/custom")
+async def bootstrap_custom(request: Request):
+    body = await request.json()
+    try:
+        schema_payload = body.get("schema")
+        records = body.get("records")
+
+        if not isinstance(records, list) or not all(isinstance(r, dict) for r in records):
+            return _err("'records' must be a JSON array of objects", 400)
+        if not records:
+            return _err("'records' cannot be empty", 400)
+
+        registration = _registration_from_payload(schema_payload)
+
+        with _lock:
+            summary = _run_bootstrap_with_records(registration, records)
+            return _ok({
+                "message": f"Custom bootstrap completed with {len(records)} records",
+                **summary,
+            })
+    except Exception as exc:
+        logger.exception("Custom bootstrap failed")
+        return _err(f"Custom bootstrap failed: {exc}", 500)
 
 
 # ── Session ───────────────────────────────────────────────────────────────────
