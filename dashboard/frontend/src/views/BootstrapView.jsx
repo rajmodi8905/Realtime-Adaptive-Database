@@ -12,6 +12,40 @@ export default function BootstrapView({ onSessionUpdate }) {
   const [result, setResult] = useState(null)
   const toast = useToast()
 
+  const workingSample = {
+    schema: {
+      schema_name: 'quick_custom',
+      version: '1.0.0',
+      root_entity: 'order_event',
+      json_schema: {
+        type: 'object',
+        properties: {
+          customer_id: { type: 'string' },
+          order_id: { type: 'string' },
+          timestamp: { type: 'string' },
+          payment: {
+            type: 'object',
+            properties: {
+              status: { type: 'string' },
+            },
+          },
+        },
+      },
+      constraints: {
+        unique_candidates: ['order_id'],
+        linking_field: 'customer_id',
+      },
+    },
+    records: [
+      {
+        customer_id: 'c1',
+        order_id: 'o1',
+        timestamp: '2026-01-01T00:00:00Z',
+        payment: { status: 'captured' },
+      },
+    ],
+  }
+
   useEffect(() => {
     let mounted = true
     api.schema()
@@ -88,6 +122,13 @@ export default function BootstrapView({ onSessionUpdate }) {
     setLoading(false)
   }
 
+  function loadWorkingSample() {
+    setSchemaInput(JSON.stringify(workingSample.schema, null, 2))
+    setRecordsInput(JSON.stringify(workingSample.records, null, 2))
+    setMode('custom')
+    toast('Loaded a working sample schema + data', 'info')
+  }
+
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
       <h1 className="view-title">Bootstrap Database</h1>
@@ -107,6 +148,9 @@ export default function BootstrapView({ onSessionUpdate }) {
             disabled={loading}
           >
             Custom Input
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={loadWorkingSample} disabled={loading}>
+            Load Working Sample
           </button>
         </div>
 
@@ -130,6 +174,9 @@ export default function BootstrapView({ onSessionUpdate }) {
           </div>
         ) : (
           <>
+            <div className="placeholder" style={{ marginBottom: 14 }}>
+              Custom schemas should include a linking field in constraints (or a top-level unique id). If you do not use <strong>username</strong>, the backend will infer a replacement from your schema, such as <strong>customer_id</strong>.
+            </div>
             <div className="form-group" style={{ marginBottom: 14 }}>
               <label>Schema JSON</label>
               <textarea

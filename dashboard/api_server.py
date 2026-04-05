@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import copy
 import io
 import json
 import logging
@@ -212,6 +213,75 @@ def _run_bootstrap_with_records(
     }
 
 
+def _resolve_custom_linking_field(
+    registration: SchemaRegistration,
+    records: list[dict[str, Any]],
+) -> str:
+    if all(str(record.get("username", "")).strip() for record in records):
+        return "username"
+
+    constraints = registration.constraints or {}
+    configured = constraints.get("linking_field")
+    if isinstance(configured, str) and configured and all(str(record.get(configured, "")).strip() for record in records):
+        return configured
+
+    unique_candidates = constraints.get("unique_candidates") or []
+    for candidate in unique_candidates:
+        if not isinstance(candidate, str) or "." in candidate:
+            continue
+        if all(str(record.get(candidate, "")).strip() for record in records):
+            return candidate
+
+    heuristic_candidates = [
+        "customer_id",
+        "order_id",
+        "user_id",
+        "id",
+    ]
+    for candidate in heuristic_candidates:
+        if all(str(record.get(candidate, "")).strip() for record in records):
+            return candidate
+
+    raise ValueError(
+        "Could not infer a linking key for custom schema. Provide top-level 'username' in each record, "
+        "or set constraints.linking_field to a top-level field present in all records."
+    )
+
+
+def _normalize_custom_records_for_pipeline(
+    registration: SchemaRegistration,
+    records: list[dict[str, Any]],
+) -> tuple[SchemaRegistration, list[dict[str, Any]], str]:
+    linking_field = _resolve_custom_linking_field(registration, records)
+
+    normalized_records: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        normalized = dict(record)
+        if "username" not in normalized or not str(normalized.get("username", "")).strip():
+            source_value = normalized.get(linking_field)
+            if source_value is None or str(source_value).strip() == "":
+                raise ValueError(
+                    f"Record at index {index} is missing linking field '{linking_field}' needed to derive username"
+                )
+            normalized["username"] = str(source_value)
+        normalized_records.append(normalized)
+
+    normalized_registration = copy.deepcopy(registration)
+    schema = normalized_registration.json_schema or {}
+    properties = schema.setdefault("properties", {})
+    if "username" not in properties:
+        properties["username"] = {"type": "string"}
+
+    constraints = dict(normalized_registration.constraints or {})
+    not_null = list(constraints.get("not_null") or [])
+    if "username" not in not_null:
+        not_null.append("username")
+    constraints["not_null"] = not_null
+    normalized_registration.constraints = constraints
+
+    return normalized_registration, normalized_records, linking_field
+
+
 # ── lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -287,13 +357,17 @@ async def bootstrap_custom(request: Request):
             return _err("'records' cannot be empty", 400)
 
         registration = _registration_from_payload(schema_payload)
+        registration, records, linking_field = _normalize_custom_records_for_pipeline(registration, records)
 
         with _lock:
             summary = _run_bootstrap_with_records(registration, records)
             return _ok({
                 "message": f"Custom bootstrap completed with {len(records)} records",
+                "linking_field": linking_field,
                 **summary,
             })
+    except ValueError as exc:
+        return _err(str(exc), 400)
     except Exception as exc:
         logger.exception("Custom bootstrap failed")
         return _err(f"Custom bootstrap failed: {exc}", 500)
