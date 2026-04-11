@@ -491,6 +491,55 @@ async def execute_query(request: Request):
         return _err(str(exc))
 
 
+# ── Query History ─────────────────────────────────────────────────────────────
+
+@app.get("/api/query/history")
+async def list_query_history(page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=200)):
+    try:
+        p = _ensure_pipeline()
+        return _ok(p.query_history.list(page=page, limit=limit))
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.get("/api/query/history/{entry_id}")
+async def get_query_history_entry(entry_id: str):
+    try:
+        p = _ensure_pipeline()
+        entry = p.query_history.get(entry_id)
+        if entry is None:
+            return _err(f"History entry not found: {entry_id}", 404)
+        return _ok(entry.to_dict())
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.post("/api/query/history/delete")
+async def delete_query_history(request: Request):
+    try:
+        p = _ensure_pipeline()
+        body = await request.json()
+        entry_id = body.get("id")
+        if not entry_id:
+            return _err("Missing 'id' in request body")
+        removed = p.query_history.delete(entry_id)
+        if not removed:
+            return _err(f"Entry not found: {entry_id}", 404)
+        return _ok({"deleted": entry_id})
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.post("/api/query/history/clear")
+async def clear_query_history():
+    try:
+        p = _ensure_pipeline()
+        count = p.query_history.clear()
+        return _ok({"cleared": count})
+    except Exception as exc:
+        return _err(str(exc))
+
+
 # ── ACID Tests ────────────────────────────────────────────────────────────────
 
 ACID_PROPERTIES = ["atomicity", "consistency", "isolation", "durability", "reconstruction"]

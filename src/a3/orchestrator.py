@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional
 
 from src.a2.contracts import CrudOperation, FieldLocation
@@ -11,6 +12,7 @@ from .acid_experiments import AcidExperimentRunner
 from .concurrency_manager import ConcurrencyManager
 from .contracts import AcidTestResult, LogicalEntity, SessionInfo, TransactionResult
 from .logical_reconstructor import LogicalReconstructor
+from .query_history import QueryHistoryStore
 from .session_manager import SessionManager
 from .transaction_coordinator import TransactionCoordinator
 
@@ -56,6 +58,10 @@ class Assignment3Pipeline:
             query_planner=self.a2.query_planner,
             crud_engine=self.a2.crud_engine,
         )
+        self.query_history = QueryHistoryStore(
+            persistence_dir=self.config.metadata_dir,
+            max_entries=500,
+        )
 
     @property
     def _mysql_client(self):
@@ -90,8 +96,12 @@ class Assignment3Pipeline:
         op_str = query_json.get("operation", "read").lower()
         operation = CrudOperation(op_str)
         payload = {k: v for k, v in query_json.items() if k != "operation"}
+
+        t0 = time.monotonic()
         result = self.execute_transactional(operation, payload)
-        return {
+        duration_ms = (time.monotonic() - t0) * 1000
+
+        out = {
             "status": result.status,
             "operation": result.operation,
             "rolled_back": result.rolled_back,
@@ -101,18 +111,50 @@ class Assignment3Pipeline:
             "errors": result.errors,
         }
 
+        # Record in history
+        is_success = result.status in ("committed", "success") and not result.errors
+        row_count = 0
+        if isinstance(result.sql_result, dict):
+            rows = result.sql_result.get("rows") or result.sql_result.get("data") or []
+            if isinstance(rows, list):
+                row_count = len(rows)
+        self.query_history.record(
+            operation=op_str,
+            payload=query_json,
+            status="success" if is_success else "error",
+            duration_ms=duration_ms,
+            result_summary={
+                "row_count": row_count,
+                "errors": result.errors[:3] if result.errors else [],
+            },
+        )
+        return out
+
     def preview_query(self, query_json: dict[str, Any]) -> dict[str, Any]:
         op_str = query_json.get("operation", "read").lower()
         operation = CrudOperation(op_str)
         payload = {k: v for k, v in query_json.items() if k != "operation"}
+
+        t0 = time.monotonic()
         plan = self.a2.preview_plan(operation, payload)
-        return {
+        duration_ms = (time.monotonic() - t0) * 1000
+
+        out = {
             "operation": plan.operation.value,
             "requested_fields": plan.requested_fields,
             "sql_queries": plan.sql_queries,
             "mongo_queries": plan.mongo_queries,
             "merge_strategy": plan.merge_strategy,
         }
+
+        self.query_history.record(
+            operation=f"preview:{op_str}",
+            payload=query_json,
+            status="preview",
+            duration_ms=duration_ms,
+            result_summary={"fields": len(plan.requested_fields)},
+        )
+        return out
 
     def get_session_info(self) -> SessionInfo:
         return self.session_manager.get_session_info()
