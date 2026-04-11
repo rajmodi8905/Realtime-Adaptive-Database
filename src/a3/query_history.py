@@ -57,6 +57,7 @@ class QueryHistoryStore:
         self._file: Optional[Path] = None
 
         if persistence_dir is not None:
+            persistence_dir = Path(persistence_dir)
             persistence_dir.mkdir(parents=True, exist_ok=True)
             self._file = persistence_dir / _DEFAULT_HISTORY_FILE
             self._load_from_disk()

@@ -77,22 +77,32 @@ export default function QueryWorkspace({ replayPayload, onReplayConsumed }) {
 
   function extractRowCount(data) {
     if (!data) return 0
-    // Try various shapes the result might come in
-    const candidates = [data.data, data.sql_result?.data, data.sql_result?.rows, data.rows]
+    const candidates = [data, data.data, data.rows, data.results]
     for (const c of candidates) {
       if (Array.isArray(c)) return c.length
     }
-    return 0
+    // Deep fallback for payload wrappers
+    if (typeof data === 'object') {
+      for (const v of Object.values(data)) {
+         if (Array.isArray(v)) return v.length
+      }
+    }
+    return 1 // Assume singleton record if not array but exists
   }
 
   function getTableData() {
     if (!result) return []
-    // Navigate to the actual rows array
-    const candidates = [result.data, result.sql_result?.data, result.sql_result?.rows, result.rows]
+    const candidates = [result, result.data, result.rows, result.results]
     for (const c of candidates) {
       if (Array.isArray(c) && c.length > 0 && typeof c[0] === 'object') return c
     }
-    return []
+    // Deep fallback
+    if (typeof result === 'object' && !Array.isArray(result)) {
+      for (const v of Object.values(result)) {
+         if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object') return v
+      }
+    }
+    return typeof result === 'object' && !Array.isArray(result) ? [result] : []
   }
 
   const tableData = getTableData()
