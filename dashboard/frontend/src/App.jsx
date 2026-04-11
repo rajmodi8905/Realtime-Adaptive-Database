@@ -1,20 +1,44 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Particles, { initParticlesEngine } from '@tsparticles/react'
 import { loadSlim } from '@tsparticles/slim'
 import { ToastProvider } from './components/Toast'
 import SessionBar from './components/SessionBar'
 import Sidebar from './components/Sidebar'
-import BootstrapView from './views/BootstrapView'
-import EntityBrowser from './views/EntityBrowser'
-import QueryWorkspace from './views/QueryWorkspace'
-import CrudCreate from './views/CrudCreate'
-import CrudRead from './views/CrudRead'
-import CrudUpdate from './views/CrudUpdate'
-import CrudDelete from './views/CrudDelete'
-import AcidResults from './views/AcidResults'
 import { api } from './api'
 
+// ── Lazy-loaded views ────────────────────────────────────────────────────────
+const BootstrapView = lazy(() => import('./views/BootstrapView'))
+const EntityBrowser = lazy(() => import('./views/EntityBrowser'))
+const QueryWorkspace = lazy(() => import('./views/QueryWorkspace'))
+const CrudCreate = lazy(() => import('./views/CrudCreate'))
+const CrudRead = lazy(() => import('./views/CrudRead'))
+const CrudUpdate = lazy(() => import('./views/CrudUpdate'))
+const CrudDelete = lazy(() => import('./views/CrudDelete'))
+const AcidResults = lazy(() => import('./views/AcidResults'))
+const QueryHistory = lazy(() => import('./views/QueryHistory'))
+const QueryMonitoring = lazy(() => import('./views/QueryMonitoring'))
+const PerformanceBenchmark = lazy(() => import('./views/PerformanceBenchmark'))
+const SessionAnalytics = lazy(() => import('./views/SessionAnalytics'))
+
+// ── View Registry ────────────────────────────────────────────────────────────
+// Add a new view: just add an entry here + import above + sidebar section
+export const VIEW_REGISTRY = {
+  bootstrap:   { component: BootstrapView,        label: 'Bootstrap',              needsSession: false },
+  entities:    { component: EntityBrowser,         label: 'Entity Browser',         needsSession: true },
+  query:       { component: QueryWorkspace,        label: 'Query Workspace',        needsSession: true },
+  create:      { component: CrudCreate,            label: 'Create',                 needsSession: true },
+  read:        { component: CrudRead,              label: 'Read',                   needsSession: true },
+  update:      { component: CrudUpdate,            label: 'Update',                 needsSession: true },
+  delete:      { component: CrudDelete,            label: 'Delete',                 needsSession: true },
+  acid:        { component: AcidResults,           label: 'ACID Tests',             needsSession: true },
+  history:     { component: QueryHistory,          label: 'Query History',          needsSession: true },
+  monitoring:  { component: QueryMonitoring,       label: 'Query Monitoring',       needsSession: true },
+  benchmark:   { component: PerformanceBenchmark,  label: 'Performance Benchmark',  needsSession: true },
+  analytics:   { component: SessionAnalytics,      label: 'Session Analytics',      needsSession: true },
+}
+
+// ── Particles config ─────────────────────────────────────────────────────────
 const particlesOptions = {
   background: { color: { value: 'transparent' } },
   fpsLimit: 60,
@@ -57,17 +81,28 @@ const particlesOptions = {
   detectRetina: true,
 }
 
+const pageVariants = {
+  initial: { opacity: 0, y: 24, scale: 0.97 },
+  animate: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] } },
+  exit: { opacity: 0, y: -16, scale: 0.98, transition: { duration: 0.25 } },
+}
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+
 function Dashboard() {
   const [view, setView] = useState('bootstrap')
   const [session, setSession] = useState({})
   const [particlesReady, setParticlesReady] = useState(false)
 
-  // ACID state
+  // ACID state — shared between Sidebar triggers and AcidResults view
   const [acidResults, setAcidResults] = useState({})
   const [acidLogs, setAcidLogs] = useState({})
   const [acidStatuses, setAcidStatuses] = useState({})
   const [acidRunning, setAcidRunning] = useState(false)
   const acidRef = useRef(null)
+
+  // Query replay state — set from QueryHistory, consumed by QueryWorkspace
+  const [replayPayload, setReplayPayload] = useState(null)
 
   useEffect(() => {
     initParticlesEngine(async (engine) => {
@@ -93,41 +128,42 @@ function Dashboard() {
     setTimeout(() => { acidRef.current?.runAll() }, 150)
   }
 
-  const pageVariants = {
-    initial: { opacity: 0, y: 24, scale: 0.97 },
-    animate: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] } },
-    exit: { opacity: 0, y: -16, scale: 0.98, transition: { duration: 0.25 } },
+  function handleReplay(payload) {
+    setReplayPayload(payload)
+    setView('query')
   }
 
   function renderView() {
-    switch (view) {
-      case 'bootstrap': return <BootstrapView onSessionUpdate={handleSessionUpdate} />
-      case 'entities': return <EntityBrowser />
-      case 'query': return <QueryWorkspace />
-      case 'create': return <CrudCreate />
-      case 'read': return <CrudRead />
-      case 'update': return <CrudUpdate />
-      case 'delete': return <CrudDelete />
-      case 'acid': return (
-        <AcidResults
-          ref={acidRef}
-          results={acidResults}
-          setResults={setAcidResults}
-          logs={acidLogs}
-          setLogs={setAcidLogs}
-          statuses={acidStatuses}
-          setStatuses={setAcidStatuses}
-          running={acidRunning}
-          setRunning={setAcidRunning}
-        />
-      )
-      default: return <BootstrapView onSessionUpdate={handleSessionUpdate} />
+    const entry = VIEW_REGISTRY[view]
+    if (!entry) return <VIEW_REGISTRY.bootstrap.component onSessionUpdate={handleSessionUpdate} />
+
+    const Component = entry.component
+
+    // Pass view-specific props
+    const props = {}
+    if (view === 'bootstrap') props.onSessionUpdate = handleSessionUpdate
+    if (view === 'acid') {
+      Object.assign(props, {
+        ref: acidRef,
+        results: acidResults, setResults: setAcidResults,
+        logs: acidLogs, setLogs: setAcidLogs,
+        statuses: acidStatuses, setStatuses: setAcidStatuses,
+        running: acidRunning, setRunning: setAcidRunning,
+      })
     }
+    if (view === 'query') {
+      props.replayPayload = replayPayload
+      props.onReplayConsumed = () => setReplayPayload(null)
+    }
+    if (view === 'history') {
+      props.onReplay = handleReplay
+    }
+
+    return <Component {...props} />
   }
 
   return (
     <div className="app-layout">
-      {/* Ambient glow orbs */}
       <div className="ambient-orb ambient-orb-1" />
       <div className="ambient-orb ambient-orb-2" />
       <div className="ambient-orb ambient-orb-3" />
@@ -148,7 +184,9 @@ function Dashboard() {
         <main className="content">
           <AnimatePresence mode="wait">
             <motion.div key={view} variants={pageVariants} initial="initial" animate="animate" exit="exit">
-              {renderView()}
+              <Suspense fallback={<div className="view-loading">Loading…</div>}>
+                {renderView()}
+              </Suspense>
             </motion.div>
           </AnimatePresence>
         </main>

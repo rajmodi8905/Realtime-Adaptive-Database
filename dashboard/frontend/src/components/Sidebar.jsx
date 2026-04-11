@@ -1,7 +1,9 @@
 import { useRef, useCallback } from 'react'
 import { motion } from 'framer-motion'
 
-const SECTIONS = [
+// ── Data-driven navigation sections ─────────────────────────────────────────
+// Add new views: just add an entry here (and register component in App.jsx)
+export const NAV_SECTIONS = [
   {
     label: 'Setup',
     items: [{ id: 'bootstrap', icon: '⚡', text: 'Bootstrap' }],
@@ -10,16 +12,25 @@ const SECTIONS = [
     label: 'Data',
     items: [
       { id: 'entities', icon: '📦', text: 'Entity Browser' },
-      { id: 'query', icon: '🔍', text: 'Query Workspace' },
+      { id: 'query',    icon: '🔍', text: 'Query Workspace' },
+      { id: 'history',  icon: '📜', text: 'Query History' },
     ],
   },
   {
     label: 'CRUD Operations',
     items: [
       { id: 'create', icon: '＋', text: 'Create' },
-      { id: 'read', icon: '📖', text: 'Read' },
+      { id: 'read',   icon: '📖', text: 'Read' },
       { id: 'update', icon: '✏️', text: 'Update' },
       { id: 'delete', icon: '🗑', text: 'Delete' },
+    ],
+  },
+  {
+    label: 'Analytics',
+    items: [
+      { id: 'monitoring', icon: '📊', text: 'Query Monitoring' },
+      { id: 'benchmark',  icon: '⏱',  text: 'Performance Benchmark' },
+      { id: 'analytics',  icon: '📈', text: 'Session Analytics' },
     ],
   },
 ]
@@ -65,8 +76,8 @@ function RippleButton({ className, onClick, children, initial, animate, transiti
 
 export default function Sidebar({ currentView, onNavigate, acidStatuses, onRunTest, onRunAll, acidRunning }) {
   return (
-    <nav className="sidebar">
-      {SECTIONS.map((sec, si) => (
+    <nav className="sidebar" role="navigation" aria-label="Main navigation">
+      {NAV_SECTIONS.map((sec, si) => (
         <div key={sec.label}>
           <div className="sidebar-section">{sec.label}</div>
           {sec.items.map((item, ii) => (
