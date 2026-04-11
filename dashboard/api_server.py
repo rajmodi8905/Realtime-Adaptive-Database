@@ -569,6 +569,29 @@ async def clear_query_history():
         return _err(str(exc))
 
 
+# ── Evidence Export ───────────────────────────────────────────────────────────
+
+@app.get("/api/evidence/export")
+async def export_evidence():
+    """Export comprehensive evidence package for demo/submission."""
+    try:
+        p = _ensure_pipeline()
+        evidence = {
+            "exported_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
+            "session": asdict(p.get_session_info()),
+            "query_history": {
+                "stats": p.query_history.get_stats(),
+                "recent": p.query_history.list(page=1, limit=20),
+            },
+            "metrics": p.metrics.get_snapshot(),
+            "benchmarks": p.benchmark_runner.get_results(),
+            "entities": p.session_manager.list_entity_names(),
+        }
+        return _ok(evidence)
+    except Exception as exc:
+        return _err(str(exc))
+
+
 # ── Metrics & Monitoring ──────────────────────────────────────────────────────
 
 @app.get("/api/metrics")

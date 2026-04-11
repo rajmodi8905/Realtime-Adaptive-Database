@@ -85,6 +85,9 @@ export const api = {
   acidRunAll: () => post('/api/acid/run-all'),
   acidStreamUrl: (prop) => `${API_BASE}/api/acid/stream/${prop}`,
   acidStreamAllUrl: () => `${API_BASE}/api/acid/stream-all`,
+
+  // Evidence
+  evidenceExport: () => get('/api/evidence/export'),
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
