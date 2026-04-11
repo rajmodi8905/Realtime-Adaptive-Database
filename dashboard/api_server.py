@@ -64,6 +64,35 @@ def _err(msg: str, status: int = 400) -> JSONResponse:
     )
 
 
+# ── Response sanitizer ────────────────────────────────────────────────────────
+# Strip storage-internal keys from UI-consumed payloads.
+_FORBIDDEN_KEYS = frozenset({
+    "sql_queries", "mongo_queries", "sql_result", "mongo_result",
+    "sql_plan", "mongo_plan", "table_name", "table", "collection_name",
+    "collection", "index_name", "_id", "lock_key",
+})
+
+
+def _sanitize(obj: Any, *, _depth: int = 0) -> Any:
+    """Recursively strip forbidden storage-internal keys."""
+    if _depth > 20:
+        return obj
+    if isinstance(obj, dict):
+        return {
+            k: _sanitize(v, _depth=_depth + 1)
+            for k, v in obj.items()
+            if k not in _FORBIDDEN_KEYS
+        }
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(item, _depth=_depth + 1) for item in obj]
+    return obj
+
+
+def _ok_sanitized(data: Any = None) -> dict:
+    """Return a sanitized success response for UI-consumed endpoints."""
+    return {"success": True, "data": _sanitize(data), "error": None}
+
+
 def _load_registration() -> SchemaRegistration:
     data = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     return SchemaRegistration(
@@ -380,7 +409,7 @@ async def get_session():
     try:
         p = _ensure_pipeline()
         info = p.get_session_info()
-        return _ok(asdict(info))
+        return _ok_sanitized(asdict(info))
     except Exception as exc:
         return _err(str(exc))
 
@@ -436,7 +465,7 @@ async def get_entity(name: str, limit: int = Query(50, ge=1, le=1000), offset: i
     try:
         p = _ensure_pipeline()
         entity = p.get_entity_data(name, limit=limit, offset=offset)
-        return _ok(asdict(entity))
+        return _ok_sanitized(asdict(entity))
     except Exception as exc:
         return _err(str(exc))
 
@@ -486,7 +515,124 @@ async def execute_query(request: Request):
         p = _ensure_pipeline()
         body = await request.json()
         result = p.execute_query(body)
+        return _ok_sanitized(result)
+    except Exception as exc:
+        return _err(str(exc))
+
+
+# ── Query History ─────────────────────────────────────────────────────────────
+
+@app.get("/api/query/history")
+async def list_query_history(page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=200)):
+    try:
+        p = _ensure_pipeline()
+        return _ok(p.query_history.list(page=page, limit=limit))
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.get("/api/query/history/{entry_id}")
+async def get_query_history_entry(entry_id: str):
+    try:
+        p = _ensure_pipeline()
+        entry = p.query_history.get(entry_id)
+        if entry is None:
+            return _err(f"History entry not found: {entry_id}", 404)
+        return _ok(entry.to_dict())
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.post("/api/query/history/delete")
+async def delete_query_history(request: Request):
+    try:
+        p = _ensure_pipeline()
+        body = await request.json()
+        entry_id = body.get("id")
+        if not entry_id:
+            return _err("Missing 'id' in request body")
+        removed = p.query_history.delete(entry_id)
+        if not removed:
+            return _err(f"Entry not found: {entry_id}", 404)
+        return _ok({"deleted": entry_id})
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.post("/api/query/history/clear")
+async def clear_query_history():
+    try:
+        p = _ensure_pipeline()
+        count = p.query_history.clear()
+        return _ok({"cleared": count})
+    except Exception as exc:
+        return _err(str(exc))
+
+
+# ── Evidence Export ───────────────────────────────────────────────────────────
+
+@app.get("/api/evidence/export")
+async def export_evidence():
+    """Export comprehensive evidence package for demo/submission."""
+    try:
+        p = _ensure_pipeline()
+        evidence = {
+            "exported_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
+            "session": asdict(p.get_session_info()),
+            "query_history": {
+                "stats": p.query_history.get_stats(),
+                "recent": p.query_history.list(page=1, limit=20),
+            },
+            "metrics": p.metrics.get_snapshot(),
+            "benchmarks": p.benchmark_runner.get_results(),
+            "entities": p.session_manager.list_entity_names(),
+        }
+        return _ok(evidence)
+    except Exception as exc:
+        return _err(str(exc))
+
+
+# ── Metrics & Monitoring ──────────────────────────────────────────────────────
+
+@app.get("/api/metrics")
+async def get_metrics():
+    try:
+        p = _ensure_pipeline()
+        return _ok(p.metrics.get_snapshot())
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.post("/api/metrics/reset")
+async def reset_metrics():
+    try:
+        p = _ensure_pipeline()
+        p.metrics.reset()
+        return _ok({"reset": True})
+    except Exception as exc:
+        return _err(str(exc))
+
+
+# ── Benchmarks ────────────────────────────────────────────────────────────────
+
+@app.post("/api/benchmark/run")
+async def run_benchmark(request: Request):
+    try:
+        p = _ensure_pipeline()
+        body = await request.json()
+        import asyncio
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: p.benchmark_runner.run_benchmark(body))
         return _ok(result)
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.get("/api/benchmark/results")
+async def get_benchmark_results():
+    try:
+        p = _ensure_pipeline()
+        return _ok(p.benchmark_runner.get_results())
     except Exception as exc:
         return _err(str(exc))
 
