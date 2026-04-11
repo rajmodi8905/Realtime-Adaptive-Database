@@ -569,6 +569,51 @@ async def clear_query_history():
         return _err(str(exc))
 
 
+# ── Metrics & Monitoring ──────────────────────────────────────────────────────
+
+@app.get("/api/metrics")
+async def get_metrics():
+    try:
+        p = _ensure_pipeline()
+        return _ok(p.metrics.get_snapshot())
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.post("/api/metrics/reset")
+async def reset_metrics():
+    try:
+        p = _ensure_pipeline()
+        p.metrics.reset()
+        return _ok({"reset": True})
+    except Exception as exc:
+        return _err(str(exc))
+
+
+# ── Benchmarks ────────────────────────────────────────────────────────────────
+
+@app.post("/api/benchmark/run")
+async def run_benchmark(request: Request):
+    try:
+        p = _ensure_pipeline()
+        body = await request.json()
+        import asyncio
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: p.benchmark_runner.run_benchmark(body))
+        return _ok(result)
+    except Exception as exc:
+        return _err(str(exc))
+
+
+@app.get("/api/benchmark/results")
+async def get_benchmark_results():
+    try:
+        p = _ensure_pipeline()
+        return _ok(p.benchmark_runner.get_results())
+    except Exception as exc:
+        return _err(str(exc))
+
+
 # ── ACID Tests ────────────────────────────────────────────────────────────────
 
 ACID_PROPERTIES = ["atomicity", "consistency", "isolation", "durability", "reconstruction"]

@@ -12,6 +12,7 @@ from .acid_experiments import AcidExperimentRunner
 from .concurrency_manager import ConcurrencyManager
 from .contracts import AcidTestResult, LogicalEntity, SessionInfo, TransactionResult
 from .logical_reconstructor import LogicalReconstructor
+from .metrics import BenchmarkRunner, MetricsCollector
 from .query_history import QueryHistoryStore
 from .session_manager import SessionManager
 from .transaction_coordinator import TransactionCoordinator
@@ -62,6 +63,8 @@ class Assignment3Pipeline:
             persistence_dir=self.config.metadata_dir,
             max_entries=500,
         )
+        self.metrics = MetricsCollector(max_points=2000, window_seconds=3600)
+        self.benchmark_runner = BenchmarkRunner(self)
 
     @property
     def _mysql_client(self):
@@ -128,6 +131,14 @@ class Assignment3Pipeline:
                 "errors": result.errors[:3] if result.errors else [],
             },
         )
+
+        # Record metrics
+        self.metrics.record(
+            operation=op_str,
+            duration_ms=duration_ms,
+            status="success" if is_success else "error",
+        )
+
         return out
 
     def preview_query(self, query_json: dict[str, Any]) -> dict[str, Any]:

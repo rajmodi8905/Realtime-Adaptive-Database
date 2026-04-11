@@ -73,6 +73,7 @@ export const api = {
 
   // Metrics & Monitoring
   metrics: () => get('/api/metrics'),
+  metricsReset: () => post('/api/metrics/reset'),
   metricsStream: () => `${API_BASE}/api/metrics/stream`,
 
   // Benchmarks
