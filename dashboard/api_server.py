@@ -64,6 +64,35 @@ def _err(msg: str, status: int = 400) -> JSONResponse:
     )
 
 
+# ── Response sanitizer ────────────────────────────────────────────────────────
+# Strip storage-internal keys from UI-consumed payloads.
+_FORBIDDEN_KEYS = frozenset({
+    "sql_queries", "mongo_queries", "sql_result", "mongo_result",
+    "sql_plan", "mongo_plan", "table_name", "table", "collection_name",
+    "collection", "index_name", "_id", "lock_key",
+})
+
+
+def _sanitize(obj: Any, *, _depth: int = 0) -> Any:
+    """Recursively strip forbidden storage-internal keys."""
+    if _depth > 20:
+        return obj
+    if isinstance(obj, dict):
+        return {
+            k: _sanitize(v, _depth=_depth + 1)
+            for k, v in obj.items()
+            if k not in _FORBIDDEN_KEYS
+        }
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(item, _depth=_depth + 1) for item in obj]
+    return obj
+
+
+def _ok_sanitized(data: Any = None) -> dict:
+    """Return a sanitized success response for UI-consumed endpoints."""
+    return {"success": True, "data": _sanitize(data), "error": None}
+
+
 def _load_registration() -> SchemaRegistration:
     data = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     return SchemaRegistration(
@@ -380,7 +409,7 @@ async def get_session():
     try:
         p = _ensure_pipeline()
         info = p.get_session_info()
-        return _ok(asdict(info))
+        return _ok_sanitized(asdict(info))
     except Exception as exc:
         return _err(str(exc))
 
@@ -436,7 +465,7 @@ async def get_entity(name: str, limit: int = Query(50, ge=1, le=1000), offset: i
     try:
         p = _ensure_pipeline()
         entity = p.get_entity_data(name, limit=limit, offset=offset)
-        return _ok(asdict(entity))
+        return _ok_sanitized(asdict(entity))
     except Exception as exc:
         return _err(str(exc))
 
@@ -486,7 +515,7 @@ async def execute_query(request: Request):
         p = _ensure_pipeline()
         body = await request.json()
         result = p.execute_query(body)
-        return _ok(result)
+        return _ok_sanitized(result)
     except Exception as exc:
         return _err(str(exc))
 
