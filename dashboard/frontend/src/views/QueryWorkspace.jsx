@@ -81,10 +81,12 @@ export default function QueryWorkspace({ replayPayload, onReplayConsumed }) {
     for (const c of candidates) {
       if (Array.isArray(c)) return c.length
     }
-    // Deep fallback for payload wrappers
-    if (typeof data === 'object') {
-      for (const v of Object.values(data)) {
-         if (Array.isArray(v)) return v.length
+    // Deep fallback for payload wrappers like { status: "...", data: { table_name: [...] } }
+    for (const c of candidates) {
+      if (c && typeof c === 'object' && !Array.isArray(c)) {
+        for (const v of Object.values(c)) {
+          if (Array.isArray(v)) return v.length
+        }
       }
     }
     return 1 // Assume singleton record if not array but exists
@@ -96,10 +98,12 @@ export default function QueryWorkspace({ replayPayload, onReplayConsumed }) {
     for (const c of candidates) {
       if (Array.isArray(c) && c.length > 0 && typeof c[0] === 'object') return c
     }
-    // Deep fallback
-    if (typeof result === 'object' && !Array.isArray(result)) {
-      for (const v of Object.values(result)) {
-         if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object') return v
+    // Deep fallback for wrapper objects
+    for (const c of candidates) {
+      if (c && typeof c === 'object' && !Array.isArray(c)) {
+        for (const v of Object.values(c)) {
+          if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object') return v
+        }
       }
     }
     return typeof result === 'object' && !Array.isArray(result) ? [result] : []

@@ -105,8 +105,11 @@ export default function DataTable({
     sorted.forEach(row => {
       const vals = visibleCols.map(c => {
         const v = getNestedValue(row, c.key)
-        const s = v == null ? '' : String(v)
-        return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s
+        let s = ''
+        if (v != null) {
+          s = typeof v === 'object' ? JSON.stringify(v) : String(v)
+        }
+        return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
       })
       lines.push(vals.join(','))
     })
@@ -240,10 +243,24 @@ function CellValue({ value }) {
   if (typeof value === 'number') return <span className="cell-number">{value}</span>
   if (Array.isArray(value)) {
     if (value.length === 0) return <span className="cell-null">[]</span>
-    return <span className="cell-array" title={JSON.stringify(value, null, 2)}>[{value.length} items]</span>
+    return (
+      <details className="cell-expandable" style={{ cursor: 'pointer' }}>
+        <summary className="cell-array">[{value.length} items]</summary>
+        <pre style={{ margin: '4px 0 0', padding: '6px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', fontSize: '9px', maxHeight: '150px', overflow: 'auto', color: 'var(--text-secondary)' }}>
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      </details>
+    )
   }
   if (typeof value === 'object') {
-    return <span className="cell-object" title={JSON.stringify(value, null, 2)}>{'{…}'}</span>
+    return (
+      <details className="cell-expandable" style={{ cursor: 'pointer' }}>
+        <summary className="cell-object">{`{…}`}</summary>
+        <pre style={{ margin: '4px 0 0', padding: '6px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', fontSize: '9px', maxHeight: '150px', overflow: 'auto', color: 'var(--text-secondary)' }}>
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      </details>
+    )
   }
   const s = String(value)
   if (s.length > 80) return <span title={s}>{s.slice(0, 77)}…</span>
