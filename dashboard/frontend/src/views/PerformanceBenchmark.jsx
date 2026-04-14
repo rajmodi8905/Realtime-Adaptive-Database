@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts'
 import { motion } from 'framer-motion'
 import { api } from '../api'
 import { useToast } from '../components/Toast'
@@ -49,6 +50,18 @@ export default function PerformanceBenchmark() {
 
   const latest = results[0]
 
+  let breakdownData = []
+  if (latest && latest.results?.avg_breakdown_ms) {
+    breakdownData = [{
+      name: 'Timings (ms)',
+      'Metadata Lookup': latest.results.avg_breakdown_ms.metadata_lookup_ms || 0,
+      'Query Plan': latest.results.avg_breakdown_ms.query_plan_ms || 0,
+      'SQL Execution': latest.results.avg_breakdown_ms.sql_ms || 0,
+      'Mongo Execution': latest.results.avg_breakdown_ms.mongo_ms || 0,
+      'Merging': latest.results.avg_breakdown_ms.merge_ms || 0,
+    }]
+  }
+
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
       <h1 className="view-title">Performance Benchmark</h1>
@@ -95,6 +108,50 @@ export default function PerformanceBenchmark() {
             <StatBox label="Warmup" value={latest.config?.warmup ?? 0} />
             <StatBox label="Iterations" value={latest.config?.iterations ?? 0} />
           </div>
+
+          {latest.results?.avg_breakdown_ms && (
+            <div style={{ marginTop: 24, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
+              <h4 style={{ marginBottom: 16 }}>Execution Pipeline Breakdown (Average ms)</h4>
+              <div style={{ width: '100%', height: 120 }}>
+                <ResponsiveContainer>
+                  <BarChart data={breakdownData} layout="vertical" margin={{ top: 0, right: 30, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#333" horizontal={false} />
+                    <XAxis type="number" stroke="#ccc" />
+                    <YAxis dataKey="name" type="category" stroke="#ccc" hide />
+                    <RechartsTooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333' }} />
+                    <Legend />
+                    <Bar dataKey="Metadata Lookup" stackId="a" fill="#06b6d4" />
+                    <Bar dataKey="Query Plan" stackId="a" fill="#3b82f6" />
+                    <Bar dataKey="SQL Execution" stackId="a" fill="#10b981" />
+                    <Bar dataKey="Mongo Execution" stackId="a" fill="#f59e0b" />
+                    <Bar dataKey="Merging" stackId="a" fill="#ef4444" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {latest.results?.planned_queries && (
+            <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
+              <h4 style={{ marginBottom: 12, fontSize: 14 }}>Planned Queries (First Iteration)</h4>
+              {latest.results.planned_queries.sql?.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981' }}>SQL ({latest.results.planned_queries.sql.length})</span>
+                  <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', marginTop: 4 }}>
+                    {JSON.stringify(latest.results.planned_queries.sql, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {latest.results.planned_queries.mongo?.length > 0 && (
+                <div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>MongoDB ({latest.results.planned_queries.mongo.length})</span>
+                  <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', marginTop: 4 }}>
+                    {JSON.stringify(latest.results.planned_queries.mongo, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -1,3 +1,4 @@
+import time
 from typing import Any
 
 from .contracts import CrudOperation, FieldLocation, QueryPlan
@@ -195,6 +196,7 @@ class CrudEngine:
             return docs
 
         # ---- Execute SQL reads -------------------------------------------------
+        t_sql_start = time.perf_counter()
         for idx, query in enumerate(plan.sql_queries or []):
             if query.get("type") not in (None, "select"):
                 msg = f"SQL query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
@@ -217,7 +219,10 @@ class CrudEngine:
                 print(msg)
                 errors.append(msg)
 
+        t_sql = (time.perf_counter() - t_sql_start) * 1000
+
         # ---- Execute Mongo reads -----------------------------------------------
+        t_mongo_start = time.perf_counter()
         for idx, query in enumerate(plan.mongo_queries or []):
             if query.get("type") not in (None, "find"):
                 msg = f"Mongo query #{idx + 1} skipped: unsupported type '{query.get('type')}'"
@@ -239,7 +244,10 @@ class CrudEngine:
                 print(msg)
                 errors.append(msg)
 
+        t_mongo = (time.perf_counter() - t_mongo_start) * 1000
+
         # ---- Merge --------------------------------------------------------------
+        t_merge_start = time.perf_counter()
         sql_flat = [flatten_doc(r) for r in sql_rows]
         mongo_flat = [flatten_doc(d) for d in mongo_docs]
 
@@ -383,6 +391,8 @@ class CrudEngine:
             records = records[global_offset:global_offset + global_limit]
         elif global_offset:
             records = records[global_offset:]
+            
+        t_merge = (time.perf_counter() - t_merge_start) * 1000
 
         if errors and not records:
             return {
@@ -395,6 +405,7 @@ class CrudEngine:
             }
 
         status = "partial_success" if errors else "success"
+        timings = {"sql_ms": round(t_sql, 2), "mongo_ms": round(t_mongo, 2), "merge_ms": round(t_merge, 2)}
         return {
             "status": status,
             "operation": "read",
@@ -405,6 +416,7 @@ class CrudEngine:
             "sql_rows": len(sql_rows),
             "mongo_docs": len(mongo_docs),
             "errors": errors,
+            "timings": timings,
         }
 
     def _execute_insert(self, plan: QueryPlan, mysql_client, mongo_client) -> dict:

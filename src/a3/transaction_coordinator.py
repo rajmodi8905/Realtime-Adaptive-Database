@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from copy import deepcopy
 from typing import Any, Optional
 
@@ -72,7 +73,10 @@ class TransactionCoordinator:
         if operation == CrudOperation.READ:
             return self._execute_read(payload, field_locations, mysql_client, mongo_client, lock_key)
 
+        t_plan_start = time.perf_counter()
         plan = self.query_planner.build_plan(operation, payload, field_locations)
+        t_plan = (time.perf_counter() - t_plan_start) * 1000
+        
         sql_plan = self._sql_only_plan(plan)
         mongo_plan = self._mongo_only_plan(plan)
 
@@ -93,7 +97,9 @@ class TransactionCoordinator:
         mongo_snapshot: dict[str, Any] = {}
 
         try:
+            t_sql_start = time.perf_counter()
             sql_result = self.crud_engine.execute(sql_plan, mysql_client, mongo_client)
+            t_sql = (time.perf_counter() - t_sql_start) * 1000
 
             if not self._is_write_result_success(sql_result):
                 original_rollback()
@@ -104,10 +110,13 @@ class TransactionCoordinator:
                     rolled_back=True,
                     errors=sql_result.get("errors", []),
                     lock_key=lock_key,
+                    timings={"query_plan_ms": round(t_plan, 2), "sql_ms": round(t_sql, 2)}
                 )
 
             mongo_snapshot = self._snapshot_mongo(mongo_client, mongo_plan, operation)
+            t_mongo_start = time.perf_counter()
             mongo_result = self.crud_engine.execute(mongo_plan, mysql_client, mongo_client)
+            t_mongo = (time.perf_counter() - t_mongo_start) * 1000
 
             if not self._is_write_result_success(mongo_result):
                 original_rollback()
@@ -121,6 +130,7 @@ class TransactionCoordinator:
                     rolled_back=True,
                     errors=all_errors,
                     lock_key=lock_key,
+                    timings={"query_plan_ms": round(t_plan, 2), "sql_ms": round(t_sql, 2), "mongo_ms": round(t_mongo, 2)}
                 )
 
             original_commit()
@@ -133,6 +143,7 @@ class TransactionCoordinator:
                 mongo_result=mongo_result,
                 errors=merged_errors,
                 lock_key=lock_key,
+                timings={"query_plan_ms": round(t_plan, 2), "sql_ms": round(t_sql, 2), "mongo_ms": round(t_mongo, 2)}
             )
 
         except Exception as exc:
@@ -161,15 +172,26 @@ class TransactionCoordinator:
         mongo_client,
         lock_key: str = "",
     ) -> TransactionResult:
+        t_plan_start = time.perf_counter()
         plan = self.query_planner.build_plan(CrudOperation.READ, payload, field_locations)
+        t_plan = (time.perf_counter() - t_plan_start) * 1000
+        
         result = self.crud_engine.execute(plan, mysql_client, mongo_client)
         tx_status = "committed" if result.get("status") != "error" else "error"
+        engine_timings = result.get("timings", {})
+        
         return TransactionResult(
             status=tx_status,
             operation="read",
             sql_result=result,
             errors=result.get("errors", []),
             lock_key=lock_key,
+            timings={
+                "query_plan_ms": round(t_plan, 4),
+                "sql_ms": engine_timings.get("sql_ms", 0),
+                "mongo_ms": engine_timings.get("mongo_ms", 0),
+                "merge_ms": engine_timings.get("merge_ms", 0),
+            }
         )
 
     @staticmethod

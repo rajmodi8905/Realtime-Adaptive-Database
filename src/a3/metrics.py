@@ -175,12 +175,18 @@ class BenchmarkRunner:
 
     def run_benchmark(self, config: dict[str, Any]) -> dict[str, Any]:
         """Run a benchmark trial with the given configuration."""
-        queries = config.get("queries", [
-            {"operation": "read", "filters": {}},
-        ])
+        b_type = config.get("type", "standard")
+        scenario = config.get("scenario")
         warmup = config.get("warmup", 2)
         iterations = config.get("iterations", 10)
         label = config.get("label", f"Benchmark @ {time.strftime('%H:%M:%S')}")
+
+        if b_type == "comparative" and scenario:
+            return self._run_comparative_benchmark(scenario, warmup, iterations, label)
+
+        queries = config.get("queries", [
+            {"operation": "read", "filters": {}},
+        ])
 
         # Warmup
         for _ in range(warmup):
@@ -190,21 +196,39 @@ class BenchmarkRunner:
                 except Exception:
                     pass
 
+        # Pre-compute execution breakdown keys
+        breakdowns = {"metadata_lookup_ms": 0, "query_plan_ms": 0, "sql_ms": 0, "mongo_ms": 0, "merge_ms": 0}
+        try:
+            from src.a2.contracts import CrudOperation
+            q0 = queries[0]
+            op = q0.get("operation", "read")
+            payload = {k: v for k, v in q0.items() if k != "operation"}
+            plan = self._pipeline.a2.preview_plan(CrudOperation(op), payload)
+            planned_queries = {"sql": plan.sql_queries, "mongo": plan.mongo_queries}
+        except Exception:
+            planned_queries = {"sql": [], "mongo": []}
+
         # Timed runs
         latencies = []
         errors = 0
         for _ in range(iterations):
             for q in queries:
-                t0 = time.monotonic()
+                t0 = time.perf_counter()
                 try:
-                    self._pipeline.execute_query(q)
-                    latencies.append((time.monotonic() - t0) * 1000)
+                    res = self._pipeline.execute_query(q)
+                    latencies.append((time.perf_counter() - t0) * 1000)
+                    timings = res.get("timings", {})
+                    for k in breakdowns:
+                        breakdowns[k] += timings.get(k, 0)
                 except Exception:
-                    latencies.append((time.monotonic() - t0) * 1000)
+                    latencies.append((time.perf_counter() - t0) * 1000)
                     errors += 1
 
         if not latencies:
             return {"label": label, "error": "No queries executed"}
+
+        for k in breakdowns:
+            breakdowns[k] = round(breakdowns[k] / max(1, len(latencies)), 2)
 
         sorted_lat = sorted(latencies)
         result = {
@@ -226,17 +250,170 @@ class BenchmarkRunner:
                 "p95_ms": round(sorted_lat[int(len(sorted_lat) * 0.95)], 2) if len(sorted_lat) > 1 else round(sorted_lat[0], 2),
                 "p99_ms": round(sorted_lat[int(len(sorted_lat) * 0.99)], 2) if len(sorted_lat) > 1 else round(sorted_lat[0], 2),
                 "throughput_qps": round(len(latencies) / (sum(latencies) / 1000), 2) if sum(latencies) > 0 else 0,
+                "avg_breakdown_ms": breakdowns,
+                "planned_queries": planned_queries,
             },
         }
 
         with self._lock:
             self._results.append(result)
-            # Keep last 50 benchmark runs
+            if len(self._results) > 50:
+                self._results = self._results[-50:]
+
+        return result
+
+    def _run_comparative_benchmark(self, scenario: str, warmup: int, iterations: int, label: str) -> dict:
+        field_locs = self._pipeline._get_field_locations()
+        sql_tables = set(loc.table_or_collection for loc in field_locs if loc.backend.lower() == "sql")
+        mongo_colls = set(loc.table_or_collection for loc in field_locs if loc.backend.lower() in ("mongo", "mongodb"))
+
+        logical_latencies = []
+        direct_latencies = []
+        logical_errors = 0
+        direct_errors = 0
+
+        # Define the functions for logical vs direct
+        logical_query = {"operation": "read", "filters": {}}
+        
+        def direct_fn():
+            pass
+
+        if scenario == "retrieve_users_sql":
+            table = list(sql_tables)[0] if sql_tables else "event"
+            def direct_fn():
+                # Direct SQL
+                res = self._pipeline._mysql_client.fetch_all(f"SELECT * FROM `{table}` LIMIT 100")
+                if not res: pass
+
+        elif scenario == "access_nested_mongo":
+            coll = list(mongo_colls)[0] if mongo_colls else "events"
+            def direct_fn():
+                db_name = self._pipeline._mongo_client.database
+                client = self._pipeline._mongo_client.client
+                # Fully evaluate cursor to measure true retrieval latency
+                res = list(client[db_name][coll].find().limit(100))
+                if not res: pass
+
+        elif scenario == "update_multi_entity":
+            sql_fields = [f.field_path for f in field_locs if f.backend.lower() == "sql" and "id" not in f.column_or_path.lower()]
+            logical_query = {
+                "operation": "update",
+                "filters": {},
+                "updates": {}
+            }
+            if sql_fields:
+                logical_query["updates"][sql_fields[0]] = "bench_update_val"
+            
+            def direct_fn():
+                if sql_tables:
+                    table = list(sql_tables)[0]
+                    sql = f"UPDATE `{table}` SET `{sql_fields[0] if sql_fields else '_sync'}` = '1' LIMIT 50"
+                    try:
+                        self._pipeline._mysql_client.execute(sql)
+                    except:
+                        pass # Ignore if column doesn't exist
+                if mongo_colls:
+                    coll = list(mongo_colls)[0]
+                    db_name = self._pipeline._mongo_client.database
+                    client = self._pipeline._mongo_client.client
+                    client[db_name][coll].update_many({}, {"$set": {"_bench_sync": 1}})
+        else:
+            return {"label": label, "error": f"Unknown comparative scenario: {scenario}"}
+
+        breakdowns = {"metadata_lookup_ms": 0, "query_plan_ms": 0, "sql_ms": 0, "mongo_ms": 0, "merge_ms": 0}
+        try:
+            from src.a2.contracts import CrudOperation
+            op = logical_query.get("operation", "read")
+            payload = {k: v for k, v in logical_query.items() if k != "operation"}
+            plan = self._pipeline.a2.preview_plan(CrudOperation(op), payload)
+            planned_queries = {"sql": plan.sql_queries, "mongo": plan.mongo_queries}
+        except Exception:
+            planned_queries = {"sql": [], "mongo": []}
+
+        def logical_fn():
+            res = self._pipeline.execute_query(logical_query)
+            if res.get("status") == "error":
+                raise RuntimeError(str(res.get("errors")))
+            return res
+
+        # Warmup executes without recording
+        for _ in range(warmup):
+            try: logical_fn()
+            except Exception: pass
+            try: direct_fn()
+            except Exception: pass
+
+        # Interleave metrics to avoid network bursts favoring one over the other
+        for _ in range(iterations):
+            # Logical run
+            t0 = time.perf_counter()
+            try:
+                res = logical_fn()
+                logical_latencies.append((time.perf_counter() - t0) * 1000)
+                timings = res.get("timings", {})
+                for k in breakdowns:
+                    breakdowns[k] += timings.get(k, 0)
+            except Exception:
+                logical_errors += 1
+
+            # Direct run
+            t0 = time.perf_counter()
+            try:
+                direct_fn()
+                direct_latencies.append((time.perf_counter() - t0) * 1000)
+            except Exception:
+                direct_errors += 1
+
+        if not logical_latencies:
+            logical_latencies = [0]
+        if not direct_latencies:
+            direct_latencies = [0]
+
+        avg_logical = sum(logical_latencies) / len(logical_latencies)
+        avg_direct = sum(direct_latencies) / len(direct_latencies)
+
+        for k in breakdowns:
+            breakdowns[k] = round(breakdowns[k] / max(1, len(logical_latencies)), 2)
+
+        result = {
+            "label": label,
+            "timestamp": time.time(),
+            "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "config": {
+                "type": "comparative",
+                "scenario": scenario,
+                "iterations": iterations,
+                "warmup": warmup
+            },
+            "results": {
+                "overhead_ms": round(avg_logical - avg_direct, 2),
+                "overhead_pct": round(((avg_logical - avg_direct) / avg_direct) * 100, 2) if avg_direct > 0 else 0,
+                "avg_breakdown_ms": breakdowns,
+                "planned_queries": planned_queries,
+                "logical": {
+                    "avg_ms": round(avg_logical, 2),
+                    "errors": logical_errors,
+                    "latencies": [round(l, 2) for l in logical_latencies]
+                },
+                "direct": {
+                    "avg_ms": round(avg_direct, 2),
+                    "errors": direct_errors,
+                    "latencies": [round(l, 2) for l in direct_latencies]
+                },
+                "overhead_ms": round(avg_logical - avg_direct, 2),
+                "overhead_pct": round((avg_logical / avg_direct - 1) * 100, 2) if avg_direct > 0 else 0
+            }
+        }
+
+        with self._lock:
+            self._results.append(result)
             if len(self._results) > 50:
                 self._results = self._results[-50:]
 
         return result
 
     def get_results(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._results)
         with self._lock:
             return list(self._results)

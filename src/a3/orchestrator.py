@@ -86,23 +86,30 @@ class Assignment3Pipeline:
         payload: dict,
     ) -> TransactionResult:
         self.ensure_connected()
+        t_meta_start = time.perf_counter()
         field_locations = self._get_field_locations()
-        return self.transaction_coordinator.execute_in_transaction(
+        t_meta_end = time.perf_counter()
+        
+        result = self.transaction_coordinator.execute_in_transaction(
             operation,
             payload,
             field_locations,
             self._mysql_client,
             self._mongo_client,
         )
+        if hasattr(result, "timings"):
+            result.timings["metadata_lookup_ms"] = round((t_meta_end - t_meta_start) * 1000, 4)
+        return result
+
 
     def execute_query(self, query_json: dict[str, Any]) -> dict[str, Any]:
         op_str = query_json.get("operation", "read").lower()
         operation = CrudOperation(op_str)
         payload = {k: v for k, v in query_json.items() if k != "operation"}
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         result = self.execute_transactional(operation, payload)
-        duration_ms = (time.monotonic() - t0) * 1000
+        duration_ms = (time.perf_counter() - t0) * 1000
 
         out = {
             "status": result.status,
@@ -112,6 +119,7 @@ class Assignment3Pipeline:
             "sql_result": result.sql_result,
             "mongo_result": result.mongo_result,
             "errors": result.errors,
+            "timings": getattr(result, "timings", {}),
         }
 
         # Record in history
@@ -146,9 +154,9 @@ class Assignment3Pipeline:
         operation = CrudOperation(op_str)
         payload = {k: v for k, v in query_json.items() if k != "operation"}
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         plan = self.a2.preview_plan(operation, payload)
-        duration_ms = (time.monotonic() - t0) * 1000
+        duration_ms = (time.perf_counter() - t0) * 1000
 
         out = {
             "operation": plan.operation.value,

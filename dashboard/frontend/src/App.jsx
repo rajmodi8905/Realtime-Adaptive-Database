@@ -19,6 +19,7 @@ const AcidResults = lazy(() => import('./views/AcidResults'))
 const QueryHistory = lazy(() => import('./views/QueryHistory'))
 const QueryMonitoring = lazy(() => import('./views/QueryMonitoring'))
 const PerformanceBenchmark = lazy(() => import('./views/PerformanceBenchmark'))
+const ComparativeAnalysis = lazy(() => import('./views/ComparativeAnalysis'))
 const SessionAnalytics = lazy(() => import('./views/SessionAnalytics'))
 
 // ── View Registry ────────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ export const VIEW_REGISTRY = {
   history:     { component: QueryHistory,          label: 'Query History',          needsSession: true },
   monitoring:  { component: QueryMonitoring,       label: 'Query Monitoring',       needsSession: true },
   benchmark:   { component: PerformanceBenchmark,  label: 'Performance Benchmark',  needsSession: true },
+  comparative: { component: ComparativeAnalysis,   label: 'Comparative Analysis',   needsSession: true },
   analytics:   { component: SessionAnalytics,      label: 'Session Analytics',      needsSession: true },
 }
 

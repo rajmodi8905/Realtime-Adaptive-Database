@@ -30,6 +30,7 @@ export const NAV_SECTIONS = [
     items: [
       { id: 'monitoring', icon: '📊', text: 'Query Monitoring' },
       { id: 'benchmark',  icon: '⏱',  text: 'Performance Benchmark' },
+      { id: 'comparative', icon: '⚖️', text: 'Comparative Analysis' },
       { id: 'analytics',  icon: '📈', text: 'Session Analytics' },
     ],
   },

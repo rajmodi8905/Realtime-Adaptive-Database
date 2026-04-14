@@ -13,6 +13,7 @@ class TransactionResult:
     rolled_back: bool = False
     errors: list[str] = field(default_factory=list)
     lock_key: Optional[str] = None
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
