@@ -871,6 +871,8 @@ async def run_k6_benchmark(request: Request):
             ),
             "lock_wait_ms_avg": _safe_metric(summary, "lock_wait_ms", "avg"),
             "lock_wait_ms_p95": _safe_metric(summary, "lock_wait_ms", "p(95)"),
+            "coordination_overhead_ms_avg": _safe_metric(summary, "coordination_overhead_ms", "avg"),
+            "coordination_overhead_ms_p95": _safe_metric(summary, "coordination_overhead_ms", "p(95)"),
             "exit_code": completed.returncode,
         }
         if completed.returncode != 0:

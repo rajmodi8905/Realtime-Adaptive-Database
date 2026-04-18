@@ -128,6 +128,7 @@ export default function PerformanceBenchmark() {
           throughput_ops_per_sec: Number(res.data?.throughput_ops_per_sec ?? 0),
           http_reqs_per_sec: Number(res.data?.http_reqs_per_sec ?? 0),
           success_rate_pct: Math.round(Number(res.data?.operation_success_rate ?? 0) * 100),
+          coordination_overhead_ms_avg: Number(res.data?.coordination_overhead_ms_avg ?? 0),
         })
       }
 
@@ -316,6 +317,7 @@ export default function PerformanceBenchmark() {
                   <RechartsTooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333' }} />
                   <Legend />
                   <Bar dataKey="throughput_ops_per_sec" name="Throughput (ops/s)" fill="#3b82f6" />
+                  <Bar dataKey="coordination_overhead_ms_avg" name="Coordination Overhead (avg ms)" fill="#f59e0b" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -330,6 +332,8 @@ export default function PerformanceBenchmark() {
               <Chip label="Successful Ops" value={k6Result.successful_operations ?? 0} />
               <Chip label="Failed Ops" value={k6Result.failed_operations ?? 0} variant={(k6Result.failed_operations ?? 0) > 0 ? 'error' : ''} />
               <Chip label="Success Rate" value={`${Math.round((k6Result.operation_success_rate ?? 0) * 100)}%`} />
+              <Chip label="Coordination OH (avg ms)" value={k6Result.coordination_overhead_ms_avg ?? 0} />
+              <Chip label="Coordination OH (p95 ms)" value={k6Result.coordination_overhead_ms_p95 ?? 0} />
               <Chip label="Exit Code" value={k6Result.exit_code ?? 0} variant={(k6Result.exit_code ?? 0) !== 0 ? 'error' : ''} />
             </div>
             {k6Result.warning && (

@@ -6,6 +6,7 @@ const successfulOperations = new Counter('successful_operations');
 const failedOperations = new Counter('failed_operations');
 const operationSuccessRate = new Rate('operation_success_rate');
 const lockWaitMs = new Trend('lock_wait_ms');
+const coordinationOverheadMs = new Trend('coordination_overhead_ms');
 
 // 1. Configure the load test here
 export const options = {
@@ -81,6 +82,17 @@ export default function () {
   const lockWait = responseBody?.data?.timings?.lock_wait_ms || 0;
   if (lockWait >= 0) {
     lockWaitMs.add(lockWait);
+  }
+
+  // Approximate transaction coordination overhead as non-engine orchestration time
+  const timings = responseBody?.data?.timings || {};
+  const coordinationOverhead =
+    Number(timings.metadata_lookup_ms || 0) +
+    Number(timings.query_plan_ms || 0) +
+    Number(timings.merge_ms || 0) +
+    Number(timings.lock_wait_ms || 0);
+  if (coordinationOverhead >= 0) {
+    coordinationOverheadMs.add(coordinationOverhead);
   }
 
   // Print the error if the HTTP request fails entirely
