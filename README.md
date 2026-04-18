@@ -6,6 +6,24 @@ To interact with this powerful pipeline directly in the browser, the system cont
 
 ---
 
+## 📚 Documentation
+
+For a structured documentation set, start here:
+
+- [Project Docs Hub](docs/README.md)
+- [Quickstart](docs/quickstart.md)
+- [Architecture](docs/architecture.md)
+- [API Reference](docs/api.md)
+- [Developer Guide](docs/developer-guide.md)
+
+Assignment-specific deep dives are in:
+
+- [Assignment 1 README](assignment_wise_readme/Assignment1_README.md)
+- [Assignment 2 README](assignment_wise_readme/Assignment2_README.md)
+- [Assignment 3 README](assignment_wise_readme/assignment3_README.md)
+
+---
+
 ## 🛠 Prerequisites
 
 Before launching the project, ensure your environment runs the following:
