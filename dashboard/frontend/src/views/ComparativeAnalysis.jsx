@@ -225,6 +225,16 @@ export default function ComparativeAnalysis() {
                  </div>
             </div>
 
+            {/* Benchmark Query Display */}
+            {latest.config?.logical_query && (
+                <div className="card">
+                    <div className="card-title">Benchmark Query</div>
+                    <pre style={{ fontSize: 11, padding: 12, background: '#111', borderRadius: 4, overflowX: 'auto', color: '#e0e0e0', margin: 0 }}>
+                        {JSON.stringify(latest.config.logical_query, null, 2)}
+                    </pre>
+                </div>
+            )}
+
             {/* Breakdown Chart */}
             {breakdownData.length > 0 && (
                 <div className="card">

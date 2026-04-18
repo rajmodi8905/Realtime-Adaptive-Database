@@ -98,7 +98,7 @@ class Assignment3Pipeline:
             self._mongo_client,
         )
         if hasattr(result, "timings"):
-            result.timings["metadata_lookup_ms"] = round((t_meta_end - t_meta_start) * 1000, 4)
+            result.timings["metadata_lookup_ms"] = round((t_meta_end - t_meta_start) * 1000, 6)
         return result
 
 

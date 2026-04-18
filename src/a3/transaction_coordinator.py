@@ -187,7 +187,7 @@ class TransactionCoordinator:
             errors=result.get("errors", []),
             lock_key=lock_key,
             timings={
-                "query_plan_ms": round(t_plan, 4),
+                "query_plan_ms": round(t_plan, 6),
                 "sql_ms": engine_timings.get("sql_ms", 0),
                 "mongo_ms": engine_timings.get("mongo_ms", 0),
                 "merge_ms": engine_timings.get("merge_ms", 0),

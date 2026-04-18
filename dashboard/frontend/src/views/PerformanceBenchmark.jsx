@@ -243,10 +243,10 @@ export default function PerformanceBenchmark() {
             <StatBox label="Iterations" value={latest.config?.iterations ?? 0} />
           </div>
 
-          {/* Show the user query for custom_query mode */}
-          {latest.config?.mode === 'custom_query' && latest.config?.user_query && (
+          {/* Show the benchmark query for all modes */}
+          {latest.config?.user_query && (
             <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
-              <h4 style={{ marginBottom: 10, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--accent-1)' }}>User Query</h4>
+              <h4 style={{ marginBottom: 10, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--accent-1)' }}>Benchmark Query</h4>
               <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', color: '#e0e0e0' }}>
                 {JSON.stringify(latest.config.user_query, null, 2)}
               </pre>

@@ -343,15 +343,19 @@ class BenchmarkRunner:
         if mode == "custom_query":
             return self._run_custom_query_benchmark(config, warmup, iterations, label)
 
-        # Build queries list based on mode
+        # For create mode, we must generate a fresh query each iteration to avoid
+        # duplicate primary key errors.  For other modes, build once and reuse.
+        is_create = mode == "create"
+
+        # Build queries list based on mode (used directly for non-create modes)
         queries = self._build_mode_queries(mode, iterations)
         if not queries:
             return {"label": label, "error": f"Failed to build queries for mode: {mode}"}
 
         # Warmup
-        warmup_queries = queries[:min(len(queries), 3)]
         for _ in range(warmup):
-            for q in warmup_queries:
+            warmup_q = self._build_mode_queries(mode, 1) if is_create else queries[:min(len(queries), 3)]
+            for q in warmup_q:
                 try:
                     self._pipeline.execute_query(q)
                 except Exception:
@@ -375,7 +379,9 @@ class BenchmarkRunner:
         op_counts = {}
 
         for _ in range(iterations):
-            for q in queries:
+            # For create, generate a fresh query with unique IDs each iteration
+            iter_queries = self._build_mode_queries(mode, 1) if is_create else queries
+            for q in iter_queries:
                 op_name = q.get("operation", "read")
                 op_counts[op_name] = op_counts.get(op_name, 0) + 1
                 t0 = time.perf_counter()
@@ -405,6 +411,7 @@ class BenchmarkRunner:
                 "queries": len(queries),
                 "warmup": warmup,
                 "iterations": iterations,
+                "user_query": queries[0] if queries else {},
             },
             "results": {
                 "total_runs": len(latencies),
@@ -656,32 +663,27 @@ class BenchmarkRunner:
             bench_val = f"comp_bench_{_rng.randint(1000, 9999)}"
 
             # Logical path: update via the framework with filter + real field
+            # This goes through: metadata lookup → query planning → concurrency lock
+            # → SQL update → Mongo sync → transaction commit
             logical_query = {
                 "operation": "update",
                 "filters": {"username": existing_username},
                 "updates": {update_field_path: bench_val},
             }
 
-            # Direct path: do the equivalent SQL + Mongo updates directly
+            # Direct path: ONLY do the raw SQL update — the minimal equivalent.
+            # This isolates the framework's overhead (metadata lookup, query planning,
+            # concurrency control, transaction management, Mongo sync).
             main_table = "event" if "event" in sql_tables else (list(sql_tables)[0] if sql_tables else None)
 
             def direct_fn():
-                # Direct SQL update on the same column with same filter
+                # Direct SQL update — raw single-statement execution
                 if main_table:
                     sql = f"UPDATE `{main_table}` SET `{update_col}` = %s WHERE `username` = %s"
                     try:
                         self._pipeline._mysql_client.execute(sql, (bench_val, existing_username))
                     except Exception:
                         pass
-                # Direct Mongo update on all collections
-                if mongo_colls:
-                    coll_name = list(mongo_colls)[0]
-                    db_name = self._pipeline._mongo_client.database
-                    client = self._pipeline._mongo_client.client
-                    client[db_name][coll_name].update_many(
-                        {"username": existing_username},
-                        {"$set": {"_bench_sync": bench_val}},
-                    )
 
         elif scenario == "custom_query":
             # Custom comparative benchmark from user-supplied query
@@ -789,7 +791,8 @@ class BenchmarkRunner:
                 "type": "comparative",
                 "scenario": scenario,
                 "iterations": iterations,
-                "warmup": warmup
+                "warmup": warmup,
+                "logical_query": logical_query,
             },
             "results": {
                 "overhead_ms": round(avg_logical - avg_direct, 2),
