@@ -39,7 +39,14 @@ export default function ComparativeAnalysis() {
 
   const handleAddFilter = () => {
       if (selectedField && currentFilterValue) {
-          setCustomFilters(prev => ({ ...prev, [selectedField]: currentFilterValue }));
+          let val = currentFilterValue;
+          try {
+              // Try to parse so numbers and booleans are passed correctly instead of strings
+              val = JSON.parse(currentFilterValue);
+          } catch (e) {
+              // Ignore if it's just a regular string
+          }
+          setCustomFilters(prev => ({ ...prev, [selectedField]: val }));
           setCurrentFilterValue('');
       }
   };
@@ -145,7 +152,7 @@ export default function ComparativeAnalysis() {
                         <label style={{ fontSize: 11, display: 'block', marginBottom: 6 }}>Select Indexed Field</label>
                         <select className="input" value={selectedField} onChange={e => setSelectedField(e.target.value)}>
                             {availableFields.map((f, i) => (
-                                <option key={i} value={f.column_or_path}>[{f.backend.toUpperCase()}] {f.field_path}</option>
+                                <option key={i} value={f.field_path}>[{f.backend.toUpperCase()}] {f.field_path}</option>
                             ))}
                         </select>
                     </div>
