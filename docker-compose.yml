@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ==============================================
   # MySQL Database
@@ -41,6 +39,45 @@ services:
       retries: 5
 
   # ==============================================
+  # Optional Frontend Dev Server (npm included)
+  # Start with: docker compose --profile frontend up frontend-dev
+  # ==============================================
+  frontend-dev:
+    image: node:20-bullseye
+    container_name: adaptive_db_frontend
+    restart: unless-stopped
+    profiles: ["frontend"]
+    working_dir: /workspace/dashboard/frontend
+    volumes:
+      - .:/workspace
+      - frontend_node_modules:/workspace/dashboard/frontend/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_PROXY_TARGET: ${VITE_API_PROXY_TARGET:-http://host.docker.internal:8080}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+
+  # ==============================================
+  # Optional Load Testing Runner (k6 included)
+  # Start with: docker compose --profile loadtest run --rm k6
+  # ==============================================
+  k6:
+    image: grafana/k6:0.53.0
+    container_name: adaptive_db_k6
+    profiles: ["loadtest"]
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      BASE_URL: ${LOAD_TEST_BASE_URL:-http://host.docker.internal:8080}
+    entrypoint: ["k6"]
+    command: ["run", "/workspace/load_test.js"]
+
+  # ==============================================
   # Data Stream API (from course resources)
   # Uncomment when ready to use
   # ==============================================
@@ -54,3 +91,4 @@ services:
 volumes:
   mysql_data:
   mongo_data:
+  frontend_node_modules:

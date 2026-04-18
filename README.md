@@ -60,6 +60,16 @@ npm run dev
 ```
 **Access the dashboard by opening your browser to the Local URL provided by Vite (typically [http://localhost:5173/static/](http://localhost:5173/static/))**
 
+### Optional: Use Docker for Frontend and k6
+If you prefer containerized tooling, the compose file now includes optional profiles for the Vite frontend and the k6 load-test runner.
+
+```bash
+docker compose --profile frontend up frontend-dev
+docker compose --profile loadtest run --rm k6
+```
+
+These optional containers default to `http://host.docker.internal:8080`, so keep the backend running on the host or override `VITE_API_PROXY_TARGET` and `LOAD_TEST_BASE_URL` if needed.
+
 ---
 
 ## 📖 Usage Guide

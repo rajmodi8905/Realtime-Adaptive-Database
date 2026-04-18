@@ -16,10 +16,12 @@ export const options = {
   duration: '30s',
 };
 
+const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
+
 // 2. Define what each user does
 export default function () {
   // REPLACE THIS URL with your actual FastAPI endpoint for creating/updating a record
-  const url = 'http://localhost:8080/api/crud';
+  const url = `${BASE_URL}/api/crud`;
   const unique = `${__VU}_${__ITER}_${Date.now()}`;
 
   // Create a unique test payload WITH all required fields
