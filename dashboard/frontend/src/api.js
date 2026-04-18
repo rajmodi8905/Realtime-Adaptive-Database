@@ -89,6 +89,9 @@ export const api = {
   // Evidence
   evidenceExport: () => get('/api/evidence/export'),
 
+  // Ingestion Latency
+  ingestionTimings: () => get('/api/ingestion/timings'),
+
   // Auth
   authLogin: (username) => post('/api/auth/login', { username }),
   authLogout: (token) => post('/api/auth/logout', { token }),

@@ -55,6 +55,9 @@ METADATA_DIR = Path(__file__).resolve().parent.parent / "metadata"
 _user_sessions: dict[str, dict[str, Any]] = {}   # token → session dict
 _user_sessions_lock = threading.Lock()
 
+# ── ingestion latency store ──────────────────────────────────────────────────
+_last_bootstrap_timings: dict[str, Any] | None = None
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -203,7 +206,9 @@ def _run_bootstrap_with_records(
     registration: SchemaRegistration,
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    global pipeline, _registration
+    global pipeline, _registration, _last_bootstrap_timings
+
+    t_total_start = time.perf_counter()
 
     # Cleanup old pipeline
     if pipeline is not None:
@@ -220,30 +225,56 @@ def _run_bootstrap_with_records(
     pipeline = Assignment3Pipeline(config=cfg)
 
     # Phase 1: Register schema
+    t0 = time.perf_counter()
     pipeline.a2.register_schema(registration)
+    t_schema = (time.perf_counter() - t0) * 1000
 
     # Phase 2: Ingest/classify from provided records
+    t0 = time.perf_counter()
     pipeline.a2.run_ingestion(records)
+    t_ingestion = (time.perf_counter() - t0) * 1000
 
     # Phase 3: Build storage strategy
+    t0 = time.perf_counter()
     pipeline.a2.build_storage_strategy(registration)
+    t_storage = (time.perf_counter() - t0) * 1000
 
-    # Remove transient A1-ingested/stale data so only A2 transactional
-    # inserts define the final logical snapshot shown in the dashboard.
+    # Phase 4: Reset backend + rebuild
+    t0 = time.perf_counter()
     _reset_backend_data(pipeline)
-
-    # Rebuild storage structures after reset (tables/collections dropped).
     pipeline.a2.build_storage_strategy(registration)
+    t_reset = (time.perf_counter() - t0) * 1000
 
-    # Phase 4: Insert records via transactional CRUD
+    # Phase 5: Insert records via transactional CRUD
+    t0 = time.perf_counter()
     result = pipeline.execute_transactional(
         CrudOperation.CREATE, {"records": records}
     )
+    t_insert = (time.perf_counter() - t0) * 1000
+
+    t_total = (time.perf_counter() - t_total_start) * 1000
+
+    _last_bootstrap_timings = {
+        "timestamp": time.time(),
+        "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "record_count": len(records),
+        "schema_name": registration.schema_name,
+        "total_ms": round(t_total, 2),
+        "phases": {
+            "schema_registration_ms": round(t_schema, 2),
+            "data_ingestion_ms": round(t_ingestion, 2),
+            "storage_strategy_ms": round(t_storage, 2),
+            "backend_reset_rebuild_ms": round(t_reset, 2),
+            "transactional_insert_ms": round(t_insert, 2),
+        },
+    }
+    logger.info("Bootstrap timings: %s", _last_bootstrap_timings)
 
     session = pipeline.get_session_info()
     return {
         "create_status": result.status,
         "session": asdict(session),
+        "timings": _last_bootstrap_timings,
     }
 
 
@@ -438,6 +469,14 @@ def _fmt_duration(seconds: float) -> str:
     h = s // 3600
     m = (s % 3600) // 60
     return f"{h}h {m}m"
+
+
+@app.get("/api/ingestion/timings")
+async def ingestion_timings():
+    """Return latest bootstrap pipeline timing breakdown."""
+    if _last_bootstrap_timings is None:
+        return _err("No bootstrap has been run yet", 404)
+    return _ok(_last_bootstrap_timings)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

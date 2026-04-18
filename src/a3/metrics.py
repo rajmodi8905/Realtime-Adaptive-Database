@@ -180,17 +180,26 @@ class BenchmarkRunner:
         warmup = config.get("warmup", 2)
         iterations = config.get("iterations", 10)
         label = config.get("label", f"Benchmark @ {time.strftime('%H:%M:%S')}")
+        mode = config.get("mode", "read")
 
         if b_type == "comparative" and scenario:
             return self._run_comparative_benchmark(scenario, warmup, iterations, label)
 
-        queries = config.get("queries", [
-            {"operation": "read", "filters": {}},
-        ])
+        # Build queries list based on mode
+        if mode == "custom":
+            mix = config.get("mix", {"read": 10})
+            queries = self._build_custom_mix_queries(mix)
+            if not queries:
+                return {"label": label, "error": "Empty custom mix"}
+        else:
+            queries = self._build_mode_queries(mode, iterations)
+            if not queries:
+                return {"label": label, "error": f"Failed to build queries for mode: {mode}"}
 
         # Warmup
+        warmup_queries = queries[:min(len(queries), 3)]
         for _ in range(warmup):
-            for q in queries:
+            for q in warmup_queries:
                 try:
                     self._pipeline.execute_query(q)
                 except Exception:
@@ -208,11 +217,19 @@ class BenchmarkRunner:
         except Exception:
             planned_queries = {"sql": [], "mongo": []}
 
-        # Timed runs
+        # Timed runs — for non-custom modes, repeat queries `iterations` times
         latencies = []
         errors = 0
-        for _ in range(iterations):
-            for q in queries:
+        op_counts = {}
+
+        if mode == "custom":
+            # Custom: run each query once (already sized by mix)
+            import random as _rng
+            shuffled = list(queries)
+            _rng.shuffle(shuffled)
+            for q in shuffled:
+                op_name = q.get("operation", "read")
+                op_counts[op_name] = op_counts.get(op_name, 0) + 1
                 t0 = time.perf_counter()
                 try:
                     res = self._pipeline.execute_query(q)
@@ -223,6 +240,21 @@ class BenchmarkRunner:
                 except Exception:
                     latencies.append((time.perf_counter() - t0) * 1000)
                     errors += 1
+        else:
+            for _ in range(iterations):
+                for q in queries:
+                    op_name = q.get("operation", "read")
+                    op_counts[op_name] = op_counts.get(op_name, 0) + 1
+                    t0 = time.perf_counter()
+                    try:
+                        res = self._pipeline.execute_query(q)
+                        latencies.append((time.perf_counter() - t0) * 1000)
+                        timings = res.get("timings", {})
+                        for k in breakdowns:
+                            breakdowns[k] += timings.get(k, 0)
+                    except Exception:
+                        latencies.append((time.perf_counter() - t0) * 1000)
+                        errors += 1
 
         if not latencies:
             return {"label": label, "error": "No queries executed"}
@@ -236,9 +268,11 @@ class BenchmarkRunner:
             "timestamp": time.time(),
             "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "config": {
+                "mode": mode,
                 "queries": len(queries),
                 "warmup": warmup,
                 "iterations": iterations,
+                "mix": config.get("mix") if mode == "custom" else None,
             },
             "results": {
                 "total_runs": len(latencies),
@@ -252,6 +286,7 @@ class BenchmarkRunner:
                 "throughput_qps": round(len(latencies) / (sum(latencies) / 1000), 2) if sum(latencies) > 0 else 0,
                 "avg_breakdown_ms": breakdowns,
                 "planned_queries": planned_queries,
+                "op_counts": op_counts,
             },
         }
 
@@ -261,6 +296,51 @@ class BenchmarkRunner:
                 self._results = self._results[-50:]
 
         return result
+
+    def _build_mode_queries(self, mode: str, count: int = 1) -> list[dict[str, Any]]:
+        """Build a list of queries for a single-mode benchmark."""
+        if mode == "read":
+            return [{"operation": "read", "filters": {}}]
+        elif mode == "create":
+            return [self._make_create_query()]
+        elif mode == "update":
+            return [{"operation": "update", "filters": {}, "updates": {"_bench_flag": "updated"}}]
+        elif mode == "delete":
+            # Create a temp record first, then delete it
+            return [{"operation": "read", "filters": {}}]  # fallback to read for safety
+        return [{"operation": "read", "filters": {}}]
+
+    def _build_custom_mix_queries(self, mix: dict[str, int]) -> list[dict[str, Any]]:
+        """Build an interleaved list of queries from a mix spec like {read: 10, create: 5}."""
+        queries: list[dict[str, Any]] = []
+        for op, count in mix.items():
+            if not isinstance(count, int) or count <= 0:
+                continue
+            for _ in range(count):
+                if op == "read":
+                    queries.append({"operation": "read", "filters": {}})
+                elif op == "create":
+                    queries.append(self._make_create_query())
+                elif op == "update":
+                    queries.append({"operation": "update", "filters": {}, "updates": {"_bench_flag": "updated"}})
+                elif op == "delete":
+                    # For delete benchmarks, run a read instead to avoid data loss
+                    queries.append({"operation": "read", "filters": {}})
+        return queries
+
+    def _make_create_query(self) -> dict[str, Any]:
+        """Generate a sample CREATE query using a minimal synthetic record."""
+        import random as _rng
+        uid = f"bench_{_rng.randint(10000, 99999)}"
+        record = {
+            "username": uid,
+            "event_id": f"evt_{uid}",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "event_type": "benchmark_test",
+            "post": {"content": "Benchmark test record", "tags": ["bench"]},
+            "device": {"device_id": f"dev_{uid}", "type": "test"},
+        }
+        return {"operation": "create", "records": [record]}
 
     def _run_comparative_benchmark(self, scenario: str, warmup: int, iterations: int, label: str) -> dict:
         field_locs = self._pipeline._get_field_locations()

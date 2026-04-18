@@ -4,14 +4,24 @@ import { motion } from 'framer-motion'
 import { api } from '../api'
 import { useToast } from '../components/Toast'
 
+const MODES = [
+  { key: 'read',   icon: '📖', label: 'Read',       desc: 'Benchmark query/read performance' },
+  { key: 'create', icon: '✏️', label: 'Create',     desc: 'Benchmark record insertion speed' },
+  { key: 'update', icon: '🔄', label: 'Update',     desc: 'Benchmark field update latency' },
+  { key: 'delete', icon: '🗑️', label: 'Delete',     desc: 'Benchmark record deletion speed' },
+  { key: 'custom', icon: '🎛️', label: 'Custom Mix', desc: 'User-defined operation ratio' },
+]
+
 export default function PerformanceBenchmark() {
   const [results, setResults] = useState([])
   const [running, setRunning] = useState(false)
+  const [selectedMode, setSelectedMode] = useState('read')
   const [config, setConfig] = useState({
     label: '',
     iterations: 10,
     warmup: 2,
   })
+  const [customMix, setCustomMix] = useState({ read: 10, create: 5, update: 0, delete: 0 })
   const toast = useToast()
 
   const fetchResults = useCallback(async () => {
@@ -25,14 +35,21 @@ export default function PerformanceBenchmark() {
 
   useEffect(() => { fetchResults() }, [fetchResults])
 
+  const totalMix = Object.values(customMix).reduce((a, b) => a + b, 0)
+
   async function runBenchmark() {
     setRunning(true)
     try {
+      const modeLabel = MODES.find(m => m.key === selectedMode)?.label || selectedMode
       const payload = {
-        label: config.label || `Benchmark @ ${new Date().toLocaleTimeString()}`,
+        label: config.label || `${modeLabel} Benchmark @ ${new Date().toLocaleTimeString()}`,
         iterations: config.iterations,
         warmup: config.warmup,
-        queries: [{ operation: 'read', filters: {} }],
+        mode: selectedMode,
+      }
+      if (selectedMode === 'custom') {
+        payload.mix = { ...customMix }
+        payload.iterations = 1  // custom mix defines its own counts
       }
       const res = await api.benchmarkRun(payload)
       if (res.success) {
@@ -65,34 +82,122 @@ export default function PerformanceBenchmark() {
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
       <h1 className="view-title">Performance Benchmark</h1>
-      <p className="view-subtitle">Run on-demand benchmarks to measure query throughput and latency under load</p>
+      <p className="view-subtitle">Run targeted benchmarks to measure CRUD throughput and latency under load</p>
 
-      {/* Config */}
+      {/* Mode Selector */}
       <div className="card">
-        <div className="card-title">Benchmark Configuration</div>
+        <div className="card-title">Benchmark Mode</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+          {MODES.map(m => (
+            <button
+              key={m.key}
+              onClick={() => setSelectedMode(m.key)}
+              style={{
+                padding: '16px 12px',
+                background: selectedMode === m.key
+                  ? 'linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.15))'
+                  : 'var(--bg-elevated)',
+                border: selectedMode === m.key
+                  ? '2px solid var(--accent-1)'
+                  : '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+                textAlign: 'center',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <div style={{ fontSize: 24, marginBottom: 6 }}>{m.icon}</div>
+              <div style={{
+                fontSize: 13, fontWeight: 700, color: selectedMode === m.key ? 'var(--accent-1)' : 'var(--text-primary)',
+                marginBottom: 4,
+              }}>{m.label}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.3 }}>{m.desc}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Custom Mix Panel */}
+        {selectedMode === 'custom' && (
+          <div style={{
+            padding: 16,
+            background: 'rgba(139,92,246,0.05)',
+            border: '1px solid rgba(139,92,246,0.2)',
+            borderRadius: 'var(--radius-sm)',
+            marginBottom: 16,
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent-3)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Custom Operation Mix
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+              {['read', 'create', 'update', 'delete'].map(op => (
+                <div key={op} className="form-group" style={{ margin: 0 }}>
+                  <label style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700 }}>
+                    {op === 'read' ? '📖' : op === 'create' ? '✏️' : op === 'update' ? '🔄' : '🗑️'} {op}
+                  </label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={200}
+                    value={customMix[op]}
+                    onChange={e => setCustomMix(p => ({ ...p, [op]: Math.max(0, +e.target.value || 0) }))}
+                  />
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
+              Total operations: <b style={{ color: 'var(--text-primary)' }}>{totalMix}</b>
+              {totalMix > 0 && (
+                <span> — {Object.entries(customMix).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`).join(' + ')}</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Config */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
           <div className="form-group">
             <label>Label</label>
             <input className="input" placeholder="Optional label" value={config.label} onChange={e => setConfig(p => ({ ...p, label: e.target.value }))} />
           </div>
-          <div className="form-group">
-            <label>Iterations</label>
-            <input className="input" type="number" min={1} max={100} value={config.iterations} onChange={e => setConfig(p => ({ ...p, iterations: +e.target.value }))} />
-          </div>
+          {selectedMode !== 'custom' && (
+            <div className="form-group">
+              <label>Iterations</label>
+              <input className="input" type="number" min={1} max={100} value={config.iterations} onChange={e => setConfig(p => ({ ...p, iterations: +e.target.value }))} />
+            </div>
+          )}
           <div className="form-group">
             <label>Warmup Rounds</label>
             <input className="input" type="number" min={0} max={20} value={config.warmup} onChange={e => setConfig(p => ({ ...p, warmup: +e.target.value }))} />
           </div>
         </div>
-        <button className="btn btn-primary" onClick={runBenchmark} disabled={running} style={{ marginTop: 8 }}>
-          {running ? '⏳ Running…' : '🚀 Run Benchmark'}
+        <button
+          className="btn btn-primary"
+          onClick={runBenchmark}
+          disabled={running || (selectedMode === 'custom' && totalMix === 0)}
+          style={{ marginTop: 8 }}
+        >
+          {running ? '⏳ Running…' : `🚀 Run ${MODES.find(m => m.key === selectedMode)?.label || ''} Benchmark`}
         </button>
       </div>
 
       {/* Latest result */}
       {latest && (
         <div className="card mt-16">
-          <div className="card-title">{latest.label || 'Latest Result'}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div className="card-title" style={{ margin: 0 }}>{latest.label || 'Latest Result'}</div>
+            {latest.config?.mode && (
+              <span style={{
+                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                padding: '4px 10px', borderRadius: 'var(--radius-full)',
+                background: 'rgba(59,130,246,0.15)', color: 'var(--accent-1)',
+                letterSpacing: '0.06em',
+              }}>
+                {latest.config.mode}
+              </span>
+            )}
+          </div>
+
           <div className="telemetry-chips">
             <Chip label="Runs" value={latest.results?.total_runs ?? 0} />
             <Chip label="Errors" value={latest.results?.errors ?? 0} variant={latest.results?.errors > 0 ? 'error' : ''} />
@@ -108,6 +213,26 @@ export default function PerformanceBenchmark() {
             <StatBox label="Warmup" value={latest.config?.warmup ?? 0} />
             <StatBox label="Iterations" value={latest.config?.iterations ?? 0} />
           </div>
+
+          {/* Op counts (for custom mix) */}
+          {latest.results?.op_counts && Object.keys(latest.results.op_counts).length > 1 && (
+            <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
+              <h4 style={{ marginBottom: 10, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>Operation Distribution</h4>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                {Object.entries(latest.results.op_counts).map(([op, count]) => (
+                  <div key={op} style={{
+                    padding: '8px 14px',
+                    background: op === 'read' ? 'rgba(59,130,246,0.1)' : op === 'create' ? 'rgba(16,185,129,0.1)' : op === 'update' ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
+                    border: `1px solid ${op === 'read' ? 'rgba(59,130,246,0.25)' : op === 'create' ? 'rgba(16,185,129,0.25)' : op === 'update' ? 'rgba(245,158,11,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                    borderRadius: 'var(--radius-full)',
+                    fontSize: 12, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace",
+                  }}>
+                    <span style={{ textTransform: 'uppercase' }}>{op}</span>: {count}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {latest.results?.avg_breakdown_ms && (
             <div style={{ marginTop: 24, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
@@ -164,6 +289,7 @@ export default function PerformanceBenchmark() {
               <thead>
                 <tr>
                   <th className="datatable-th">Label</th>
+                  <th className="datatable-th">Mode</th>
                   <th className="datatable-th">Time</th>
                   <th className="datatable-th">Runs</th>
                   <th className="datatable-th">Avg (ms)</th>
@@ -176,6 +302,15 @@ export default function PerformanceBenchmark() {
                 {results.map((r, i) => (
                   <tr key={i} className="datatable-row">
                     <td className="datatable-td" style={{ fontWeight: 600 }}>{r.label || '—'}</td>
+                    <td className="datatable-td">
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                        padding: '2px 8px', borderRadius: 'var(--radius-full)',
+                        background: 'rgba(59,130,246,0.1)', color: 'var(--accent-1)',
+                      }}>
+                        {r.config?.mode || 'std'}
+                      </span>
+                    </td>
                     <td className="datatable-td">{r.timestamp_iso?.replace('T', ' ') || '—'}</td>
                     <td className="datatable-td">{r.results?.total_runs ?? 0}</td>
                     <td className="datatable-td">{r.results?.avg_ms ?? 0}ms</td>
@@ -196,7 +331,7 @@ export default function PerformanceBenchmark() {
         <div className="card mt-16">
           <div className="placeholder">
             <span className="placeholder-icon">🏎️</span>
-            <p>No benchmark results yet. Click "Run Benchmark" to start.</p>
+            <p>No benchmark results yet. Select a mode above and click "Run Benchmark" to start.</p>
           </div>
         </div>
       )}
