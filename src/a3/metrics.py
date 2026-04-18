@@ -343,9 +343,9 @@ class BenchmarkRunner:
         if mode == "custom_query":
             return self._run_custom_query_benchmark(config, warmup, iterations, label)
 
-        # For create mode, we must generate a fresh query each iteration to avoid
-        # duplicate primary key errors.  For other modes, build once and reuse.
-        is_create = mode == "create"
+        # For create and delete modes, we must generate a fresh query each iteration.
+        # Create avoids duplicate keys. Delete ensures a fresh record exists to be removed.
+        needs_fresh_queries = mode in ("create", "delete")
 
         # Build queries list based on mode (used directly for non-create modes)
         queries = self._build_mode_queries(mode, iterations)
@@ -354,7 +354,7 @@ class BenchmarkRunner:
 
         # Warmup
         for _ in range(warmup):
-            warmup_q = self._build_mode_queries(mode, 1) if is_create else queries[:min(len(queries), 3)]
+            warmup_q = self._build_mode_queries(mode, 1) if needs_fresh_queries else queries[:min(len(queries), 3)]
             for q in warmup_q:
                 try:
                     self._pipeline.execute_query(q)
@@ -379,8 +379,8 @@ class BenchmarkRunner:
         op_counts = {}
 
         for _ in range(iterations):
-            # For create, generate a fresh query with unique IDs each iteration
-            iter_queries = self._build_mode_queries(mode, 1) if is_create else queries
+            # For create/delete, generate a fresh query with unique IDs each iteration
+            iter_queries = self._build_mode_queries(mode, 1) if needs_fresh_queries else queries
             for q in iter_queries:
                 op_name = q.get("operation", "read")
                 op_counts[op_name] = op_counts.get(op_name, 0) + 1
@@ -530,6 +530,13 @@ class BenchmarkRunner:
         if "operation" not in user_query:
             user_query["operation"] = "read"
 
+        # Make sure users follow the schema in custom queries:
+        # If they specify a username filter (like "user_1"), replace it with a real one
+        # so the query doesn't return instantly on an empty set.
+        filters = user_query.get("filters", {})
+        if "username" in filters:
+            filters["username"] = self._get_existing_username()
+
         # Warmup
         for _ in range(warmup):
             try:
@@ -629,23 +636,32 @@ class BenchmarkRunner:
 
         if scenario == "retrieve_users_sql":
             table = list(sql_tables)[0] if sql_tables else "event"
-            logical_query = {"operation": "read", "filters": {}}
+            existing_username = self._get_existing_username()
+            logical_query = {"operation": "read", "filters": {"username": existing_username}}
 
             def direct_fn():
-                res = self._pipeline._mysql_client.fetch_all(f"SELECT * FROM `{table}` LIMIT 100")
-                if not res:
+                sql = f"SELECT * FROM `{table}` WHERE `username` = %s LIMIT 100"
+                try:
+                    res = self._pipeline._mysql_client.fetch_all(sql, (existing_username,))
+                    if not res:
+                        pass
+                except Exception:
                     pass
 
         elif scenario == "access_nested_mongo":
             coll = list(mongo_colls)[0] if mongo_colls else "events"
-            logical_query = {"operation": "read", "filters": {}}
+            existing_username = self._get_existing_username()
+            logical_query = {"operation": "read", "filters": {"username": existing_username}}
 
             def direct_fn():
                 db_name = self._pipeline._mongo_client.database
                 client = self._pipeline._mongo_client.client
                 # Fully evaluate cursor to measure true retrieval latency
-                res = list(client[db_name][coll].find().limit(100))
-                if not res:
+                try:
+                    res = list(client[db_name][coll].find({"username": existing_username}).limit(100))
+                    if not res:
+                        pass
+                except Exception:
                     pass
 
         elif scenario == "update_multi_entity":
