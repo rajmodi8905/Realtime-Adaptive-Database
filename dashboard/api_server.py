@@ -18,7 +18,10 @@ import json
 import logging
 import random
 import secrets
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -748,6 +751,47 @@ async def reset_metrics():
 
 # ── Benchmarks ────────────────────────────────────────────────────────────────
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_k6_script(script_name: str) -> Path:
+    script = (script_name or "load_test.js").strip()
+    candidate = Path(script)
+    if not candidate.is_absolute():
+        candidate = (REPO_ROOT / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    if REPO_ROOT not in candidate.parents and candidate != REPO_ROOT:
+        raise ValueError("k6 script must be inside repository workspace")
+    if not candidate.exists() or not candidate.is_file():
+        raise ValueError(f"k6 script not found: {script}")
+    if candidate.suffix.lower() != ".js":
+        raise ValueError("k6 script must be a .js file")
+    return candidate
+
+
+def _safe_metric(summary: dict[str, Any], metric: str, field: str, default: float = 0.0) -> float:
+    metrics = summary.get("metrics") or {}
+    metric_data = metrics.get(metric) or {}
+    value = metric_data.get(field)
+    if value is None and isinstance(metric_data.get("values"), dict):
+        value = metric_data["values"].get(field)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _run_k6_process(cmd: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+
 @app.post("/api/benchmark/run")
 async def run_benchmark(request: Request):
     try:
@@ -768,6 +812,78 @@ async def get_benchmark_results():
         return _ok(p.benchmark_runner.get_results())
     except Exception as exc:
         return _err(str(exc))
+
+
+@app.post("/api/benchmark/k6")
+async def run_k6_benchmark(request: Request):
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return _err("Invalid payload", status=400)
+
+        if shutil.which("k6") is None:
+            return _err("k6 is not installed or not in PATH", status=500)
+
+        script_path = _resolve_k6_script(str(body.get("script", "load_test.js")))
+        vus = max(1, int(body.get("vus", 10)))
+        duration = str(body.get("duration", "30s")).strip() or "30s"
+
+        with tempfile.NamedTemporaryFile(prefix="k6-summary-", suffix=".json", delete=False) as tmp:
+            summary_path = Path(tmp.name)
+
+        cmd = [
+            "k6",
+            "run",
+            "--vus",
+            str(vus),
+            "--duration",
+            duration,
+            "--summary-export",
+            str(summary_path),
+            str(script_path),
+        ]
+
+        loop = asyncio.get_running_loop()
+        completed = await loop.run_in_executor(None, lambda: _run_k6_process(cmd, str(REPO_ROOT)))
+
+        if not summary_path.exists():
+            return _err("k6 summary export not generated", status=500)
+
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        try:
+            summary_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        response = {
+            "script": str(script_path.relative_to(REPO_ROOT)),
+            "vus": vus,
+            "duration": duration,
+            "throughput_ops_per_sec": _safe_metric(summary, "successful_operations", "rate"),
+            "successful_operations": _safe_metric(summary, "successful_operations", "count"),
+            "failed_operations": _safe_metric(summary, "failed_operations", "count"),
+            "http_reqs_per_sec": _safe_metric(summary, "http_reqs", "rate"),
+            "operation_success_rate": _safe_metric(
+                summary,
+                "operation_success_rate",
+                "value",
+                default=_safe_metric(summary, "checks", "value"),
+            ),
+            "lock_wait_ms_avg": _safe_metric(summary, "lock_wait_ms", "avg"),
+            "lock_wait_ms_p95": _safe_metric(summary, "lock_wait_ms", "p(95)"),
+            "exit_code": completed.returncode,
+        }
+        if completed.returncode != 0:
+            response["warning"] = (completed.stderr or completed.stdout or "k6 exited with non-zero code")[-1000:]
+
+        return _ok(response)
+    except subprocess.TimeoutExpired:
+        return _err("k6 execution timed out", status=504)
+    except ValueError as exc:
+        return _err(str(exc), status=400)
+    except Exception as exc:
+        logger.exception("Failed to run k6 benchmark")
+        return _err(str(exc), status=500)
 
 
 # ── ACID Tests ────────────────────────────────────────────────────────────────

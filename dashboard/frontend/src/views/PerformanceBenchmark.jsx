@@ -28,6 +28,13 @@ export default function PerformanceBenchmark() {
   })
   const [customQueryText, setCustomQueryText] = useState(DEFAULT_CUSTOM_QUERY)
   const [customQueryError, setCustomQueryError] = useState('')
+  const [k6Running, setK6Running] = useState(false)
+  const [k6Result, setK6Result] = useState(null)
+  const [k6Config, setK6Config] = useState({
+    script: 'load_test.js',
+    vus: 10,
+    duration: '30s',
+  })
   const toast = useToast()
 
   const fetchResults = useCallback(async () => {
@@ -87,6 +94,28 @@ export default function PerformanceBenchmark() {
       toast('Benchmark failed', 'error')
     } finally {
       setRunning(false)
+    }
+  }
+
+  async function runK6Benchmark() {
+    setK6Running(true)
+    try {
+      const payload = {
+        script: (k6Config.script || 'load_test.js').trim(),
+        vus: Math.max(1, Number(k6Config.vus) || 1),
+        duration: (k6Config.duration || '30s').trim(),
+      }
+      const res = await api.benchmarkRunK6(payload)
+      if (res.success) {
+        setK6Result(res.data)
+        toast('k6 load test complete', 'success')
+      } else {
+        toast(res.error || 'k6 load test failed', 'error')
+      }
+    } catch (err) {
+      toast('k6 load test failed', 'error')
+    } finally {
+      setK6Running(false)
     }
   }
 
@@ -208,6 +237,71 @@ export default function PerformanceBenchmark() {
         >
           {running ? '⏳ Running…' : `🚀 Run ${MODES.find(m => m.key === selectedMode)?.label || ''} Benchmark`}
         </button>
+      </div>
+
+      <div className="card mt-16">
+        <div className="card-title">k6 Concurrency Throughput</div>
+        <p style={{ marginTop: 0, marginBottom: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+          Runs a real concurrent load test with virtual users and reports throughput from k6 summary metrics.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
+          <div className="form-group">
+            <label>k6 Script</label>
+            <input
+              className="input"
+              placeholder="load_test.js"
+              value={k6Config.script}
+              onChange={e => setK6Config(p => ({ ...p, script: e.target.value }))}
+            />
+          </div>
+          <div className="form-group">
+            <label>VUs</label>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={1000}
+              value={k6Config.vus}
+              onChange={e => setK6Config(p => ({ ...p, vus: +e.target.value || 1 }))}
+            />
+          </div>
+          <div className="form-group">
+            <label>Duration</label>
+            <input
+              className="input"
+              placeholder="30s"
+              value={k6Config.duration}
+              onChange={e => setK6Config(p => ({ ...p, duration: e.target.value }))}
+            />
+          </div>
+        </div>
+        <button
+          className="btn btn-primary"
+          onClick={runK6Benchmark}
+          disabled={k6Running}
+          style={{ marginTop: 8 }}
+        >
+          {k6Running ? '⏳ Running k6…' : '⚡ Run k6 Throughput Test'}
+        </button>
+
+        {k6Result && (
+          <div style={{ marginTop: 14 }}>
+            <div className="telemetry-chips">
+              <Chip label="Throughput (ops/s)" value={k6Result.throughput_ops_per_sec ?? 0} />
+              <Chip label="HTTP req/s" value={k6Result.http_reqs_per_sec ?? 0} />
+              <Chip label="Successful Ops" value={k6Result.successful_operations ?? 0} />
+              <Chip label="Failed Ops" value={k6Result.failed_operations ?? 0} variant={(k6Result.failed_operations ?? 0) > 0 ? 'error' : ''} />
+              <Chip label="Success Rate" value={`${Math.round((k6Result.operation_success_rate ?? 0) * 100)}%`} />
+              <Chip label="Exit Code" value={k6Result.exit_code ?? 0} variant={(k6Result.exit_code ?? 0) !== 0 ? 'error' : ''} />
+            </div>
+            {k6Result.warning && (
+              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--warning)' }}>{k6Result.warning}</div>
+            )}
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+              Script: {k6Result.script || 'load_test.js'} • VUs: {k6Result.vus ?? 0} • Duration: {k6Result.duration || '—'}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Latest result */}

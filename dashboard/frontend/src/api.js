@@ -79,6 +79,7 @@ export const api = {
   // Benchmarks
   benchmarkRun: (config) => post('/api/benchmark/run', config),
   benchmarkResults: () => get('/api/benchmark/results'),
+  benchmarkRunK6: (config) => post('/api/benchmark/k6', config),
 
   // ACID
   acidRun: (prop) => post(`/api/acid/run/${prop}`),
