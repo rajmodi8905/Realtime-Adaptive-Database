@@ -5,12 +5,17 @@ import { api } from '../api'
 import { useToast } from '../components/Toast'
 
 const MODES = [
-  { key: 'read',   icon: '📖', label: 'Read',       desc: 'Benchmark query/read performance' },
-  { key: 'create', icon: '✏️', label: 'Create',     desc: 'Benchmark record insertion speed' },
-  { key: 'update', icon: '🔄', label: 'Update',     desc: 'Benchmark field update latency' },
-  { key: 'delete', icon: '🗑️', label: 'Delete',     desc: 'Benchmark record deletion speed' },
-  { key: 'custom', icon: '🎛️', label: 'Custom Mix', desc: 'User-defined operation ratio' },
+  { key: 'read',         icon: '📖', label: 'Read',         desc: 'Benchmark query/read performance' },
+  { key: 'create',       icon: '✏️', label: 'Create',       desc: 'Benchmark record insertion speed' },
+  { key: 'update',       icon: '🔄', label: 'Update',       desc: 'Benchmark field update latency' },
+  { key: 'delete',       icon: '🗑️', label: 'Delete',       desc: 'Benchmark record deletion speed' },
+  { key: 'custom_query', icon: '🔍', label: 'Custom Query', desc: 'Run your own query and see latency breakdown' },
 ]
+
+const DEFAULT_CUSTOM_QUERY = JSON.stringify({
+  operation: 'read',
+  filters: { username: 'user_1' },
+}, null, 2)
 
 export default function PerformanceBenchmark() {
   const [results, setResults] = useState([])
@@ -21,7 +26,8 @@ export default function PerformanceBenchmark() {
     iterations: 10,
     warmup: 2,
   })
-  const [customMix, setCustomMix] = useState({ read: 10, create: 5, update: 0, delete: 0 })
+  const [customQueryText, setCustomQueryText] = useState(DEFAULT_CUSTOM_QUERY)
+  const [customQueryError, setCustomQueryError] = useState('')
   const toast = useToast()
 
   const fetchResults = useCallback(async () => {
@@ -35,7 +41,19 @@ export default function PerformanceBenchmark() {
 
   useEffect(() => { fetchResults() }, [fetchResults])
 
-  const totalMix = Object.values(customMix).reduce((a, b) => a + b, 0)
+  function validateCustomQuery(text) {
+    try {
+      const parsed = JSON.parse(text)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return 'Query must be a JSON object'
+      }
+      setCustomQueryError('')
+      return null
+    } catch (e) {
+      setCustomQueryError('Invalid JSON: ' + e.message)
+      return e.message
+    }
+  }
 
   async function runBenchmark() {
     setRunning(true)
@@ -47,10 +65,17 @@ export default function PerformanceBenchmark() {
         warmup: config.warmup,
         mode: selectedMode,
       }
-      if (selectedMode === 'custom') {
-        payload.mix = { ...customMix }
-        payload.iterations = 1  // custom mix defines its own counts
+
+      if (selectedMode === 'custom_query') {
+        const err = validateCustomQuery(customQueryText)
+        if (err) {
+          toast('Invalid query JSON: ' + err, 'error')
+          setRunning(false)
+          return
+        }
+        payload.custom_query = JSON.parse(customQueryText)
       }
+
       const res = await api.benchmarkRun(payload)
       if (res.success) {
         toast('Benchmark complete', 'success')
@@ -116,40 +141,46 @@ export default function PerformanceBenchmark() {
           ))}
         </div>
 
-        {/* Custom Mix Panel */}
-        {selectedMode === 'custom' && (
+        {/* Custom Query Panel */}
+        {selectedMode === 'custom_query' && (
           <div style={{
             padding: 16,
-            background: 'rgba(139,92,246,0.05)',
-            border: '1px solid rgba(139,92,246,0.2)',
+            background: 'rgba(59,130,246,0.05)',
+            border: '1px solid rgba(59,130,246,0.2)',
             borderRadius: 'var(--radius-sm)',
             marginBottom: 16,
           }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent-3)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Custom Operation Mix
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent-1)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Custom Query (JSON)
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-              {['read', 'create', 'update', 'delete'].map(op => (
-                <div key={op} className="form-group" style={{ margin: 0 }}>
-                  <label style={{ fontSize: 11, textTransform: 'uppercase', fontWeight: 700 }}>
-                    {op === 'read' ? '📖' : op === 'create' ? '✏️' : op === 'update' ? '🔄' : '🗑️'} {op}
-                  </label>
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    max={200}
-                    value={customMix[op]}
-                    onChange={e => setCustomMix(p => ({ ...p, [op]: Math.max(0, +e.target.value || 0) }))}
-                  />
-                </div>
-              ))}
-            </div>
-            <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
-              Total operations: <b style={{ color: 'var(--text-primary)' }}>{totalMix}</b>
-              {totalMix > 0 && (
-                <span> — {Object.entries(customMix).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`).join(' + ')}</span>
-              )}
+            <textarea
+              className="input"
+              style={{
+                width: '100%',
+                minHeight: 140,
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 12,
+                lineHeight: 1.5,
+                resize: 'vertical',
+                background: '#0d0d0d',
+                color: '#e0e0e0',
+                border: customQueryError ? '1px solid var(--danger)' : '1px solid var(--border-subtle)',
+              }}
+              value={customQueryText}
+              onChange={e => {
+                setCustomQueryText(e.target.value)
+                validateCustomQuery(e.target.value)
+              }}
+              spellCheck={false}
+            />
+            {customQueryError && (
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--danger)' }}>⚠ {customQueryError}</div>
+            )}
+            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              <strong>Examples:</strong><br />
+              Read: <code>{'{"operation":"read","filters":{"username":"user_1"}}'}</code><br />
+              Update: <code>{'{"operation":"update","filters":{"username":"user_1"},"updates":{"post.title":"New Title"}}'}</code><br />
+              Delete: <code>{'{"operation":"delete","filters":{"username":"user_1"}}'}</code>
             </div>
           </div>
         )}
@@ -160,12 +191,10 @@ export default function PerformanceBenchmark() {
             <label>Label</label>
             <input className="input" placeholder="Optional label" value={config.label} onChange={e => setConfig(p => ({ ...p, label: e.target.value }))} />
           </div>
-          {selectedMode !== 'custom' && (
-            <div className="form-group">
-              <label>Iterations</label>
-              <input className="input" type="number" min={1} max={100} value={config.iterations} onChange={e => setConfig(p => ({ ...p, iterations: +e.target.value }))} />
-            </div>
-          )}
+          <div className="form-group">
+            <label>Iterations</label>
+            <input className="input" type="number" min={1} max={100} value={config.iterations} onChange={e => setConfig(p => ({ ...p, iterations: +e.target.value }))} />
+          </div>
           <div className="form-group">
             <label>Warmup Rounds</label>
             <input className="input" type="number" min={0} max={20} value={config.warmup} onChange={e => setConfig(p => ({ ...p, warmup: +e.target.value }))} />
@@ -174,7 +203,7 @@ export default function PerformanceBenchmark() {
         <button
           className="btn btn-primary"
           onClick={runBenchmark}
-          disabled={running || (selectedMode === 'custom' && totalMix === 0)}
+          disabled={running || (selectedMode === 'custom_query' && !!customQueryError)}
           style={{ marginTop: 8 }}
         >
           {running ? '⏳ Running…' : `🚀 Run ${MODES.find(m => m.key === selectedMode)?.label || ''} Benchmark`}
@@ -214,8 +243,18 @@ export default function PerformanceBenchmark() {
             <StatBox label="Iterations" value={latest.config?.iterations ?? 0} />
           </div>
 
-          {/* Op counts (for custom mix) */}
-          {latest.results?.op_counts && Object.keys(latest.results.op_counts).length > 1 && (
+          {/* Show the user query for custom_query mode */}
+          {latest.config?.mode === 'custom_query' && latest.config?.user_query && (
+            <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
+              <h4 style={{ marginBottom: 10, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--accent-1)' }}>User Query</h4>
+              <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', color: '#e0e0e0' }}>
+                {JSON.stringify(latest.config.user_query, null, 2)}
+              </pre>
+            </div>
+          )}
+
+          {/* Op counts */}
+          {latest.results?.op_counts && Object.keys(latest.results.op_counts).length >= 1 && (
             <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
               <h4 style={{ marginBottom: 10, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>Operation Distribution</h4>
               <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>

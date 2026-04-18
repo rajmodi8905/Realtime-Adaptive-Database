@@ -250,10 +250,13 @@ class AcidExperimentRunner:
             details["setup"] = "insert failed"
             return False, details
 
-        title_field = self._find_field_path("title", field_locations)
-        username_field = self._find_field_path("username", field_locations)
-        if not title_field or not username_field:
-            details["setup"] = "missing title or username field"
+        username_field = self._find_field_path("username", field_locations) or "username"
+        target_field = next((loc.field_path for loc in field_locations if loc.field_path != username_field and "id" not in loc.field_path.lower()), None)
+        if not target_field:
+            target_field = next((loc.field_path for loc in field_locations if loc.field_path != username_field), None)
+            
+        if not target_field or not username_field:
+            details["setup"] = "missing target or username field"
             return False, details
 
         update_a = f"{sub_tag}_A"
@@ -266,7 +269,7 @@ class AcidExperimentRunner:
                 barrier.wait()
                 self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
-                    {"updates": {title_field: new_title}, "filters": {username_field: sub_tag}},
+                    {"updates": {target_field: new_title}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
             except Exception as exc:
@@ -286,7 +289,7 @@ class AcidExperimentRunner:
         records = read_res.sql_result.get("records", [])
         final_title = None
         for r in records:
-            t = self._extract_title(r)
+            t = self._extract_value(r, target_field)
             if t is not None:
                 final_title = t
                 break
@@ -324,10 +327,13 @@ class AcidExperimentRunner:
             details["setup"] = "insert failed"
             return False, details
 
-        title_field = self._find_field_path("title", field_locations)
-        username_field = self._find_field_path("username", field_locations)
-        if not title_field or not username_field:
-            details["setup"] = "missing title or username field"
+        username_field = self._find_field_path("username", field_locations) or "username"
+        target_field = next((loc.field_path for loc in field_locations if loc.field_path != username_field and "id" not in loc.field_path.lower()), None)
+        if not target_field:
+            target_field = next((loc.field_path for loc in field_locations if loc.field_path != username_field), None)
+            
+        if not target_field or not username_field:
+            details["setup"] = "missing target or username field"
             return False, details
 
         original_title = sub_tag
@@ -341,7 +347,7 @@ class AcidExperimentRunner:
                 barrier.wait()
                 self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
-                    {"updates": {title_field: updated_title}, "filters": {username_field: sub_tag}},
+                    {"updates": {target_field: updated_title}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
             except Exception as exc:
@@ -368,7 +374,7 @@ class AcidExperimentRunner:
 
         observed_title = None
         for r in read_results:
-            t = self._extract_title(r)
+            t = self._extract_value(r, target_field)
             if t is not None:
                 observed_title = t
                 break
@@ -410,10 +416,13 @@ class AcidExperimentRunner:
             details["setup"] = "insert failed"
             return False, details
 
-        title_field = self._find_field_path("title", field_locations)
-        username_field = self._find_field_path("username", field_locations)
-        if not title_field or not username_field:
-            details["setup"] = "missing title or username field"
+        username_field = self._find_field_path("username", field_locations) or "username"
+        target_field = next((loc.field_path for loc in field_locations if loc.field_path != username_field and "id" not in loc.field_path.lower()), None)
+        if not target_field:
+            target_field = next((loc.field_path for loc in field_locations if loc.field_path != username_field), None)
+            
+        if not target_field or not username_field:
+            details["setup"] = "missing target or username field"
             return False, details
 
         results_a: list[str] = []
@@ -448,7 +457,7 @@ class AcidExperimentRunner:
                 start = time.perf_counter()
                 self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
-                    {"updates": {title_field: f"{sub_tag}_slow"}, "filters": {username_field: sub_tag}},
+                    {"updates": {target_field: f"{sub_tag}_slow"}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
                 durations_a.append(time.perf_counter() - start)
@@ -467,7 +476,7 @@ class AcidExperimentRunner:
                 start = time.perf_counter()
                 self.txn.execute_in_transaction(
                     CrudOperation.UPDATE,
-                    {"updates": {title_field: f"{sub_tag}_fast"}, "filters": {username_field: sub_tag}},
+                    {"updates": {target_field: f"{sub_tag}_fast"}, "filters": {username_field: sub_tag}},
                     field_locations, mysql_client, mongo_client,
                 )
                 durations_b.append(time.perf_counter() - start)
@@ -497,7 +506,7 @@ class AcidExperimentRunner:
         recs = read_res.sql_result.get("records", [])
         final_title = None
         for r in recs:
-            t = self._extract_title(r)
+            t = self._extract_value(r, target_field)
             if t is not None:
                 final_title = t
                 break
@@ -633,17 +642,30 @@ class AcidExperimentRunner:
             return self._result("reconstruction", False, desc, start, details)
 
     @staticmethod
-    def _extract_title(rec: dict) -> Any:
-        """Search a record for title across all possible column name formats."""
+    def _extract_value(rec: dict, field_path: str) -> Any:
+        """Dynamically extract a value based on dot-notation or flattened key."""
         if not isinstance(rec, dict):
             return None
-        if "title" in rec:
-            return rec["title"]
+            
+        parts = field_path.split(".")
+        current = rec
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current.get(part)
+            else:
+                current = None
+                break
+        if current is not None:
+            return current
+            
+        flat_name = field_path.replace(".", "_")
+        if flat_name in rec:
+            return rec[flat_name]
+            
+        leaf = parts[-1]
         for key, val in rec.items():
-            if key.endswith(".title") or key.endswith("_title"):
+            if key.endswith(f".{leaf}") or key.endswith(f"_{leaf}"):
                 return val
-        if isinstance(rec.get("post"), dict):
-            return rec["post"].get("title")
         return None
 
     def _build_test_record(
