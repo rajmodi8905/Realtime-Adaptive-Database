@@ -30,9 +30,10 @@ export default function PerformanceBenchmark() {
   const [customQueryError, setCustomQueryError] = useState('')
   const [k6Running, setK6Running] = useState(false)
   const [k6Result, setK6Result] = useState(null)
+  const [k6Series, setK6Series] = useState([])
   const [k6Config, setK6Config] = useState({
     script: 'load_test.js',
-    vus: 10,
+    vusList: '2,4,8,16',
     duration: '30s',
   })
   const toast = useToast()
@@ -100,18 +101,39 @@ export default function PerformanceBenchmark() {
   async function runK6Benchmark() {
     setK6Running(true)
     try {
-      const payload = {
-        script: (k6Config.script || 'load_test.js').trim(),
-        vus: Math.max(1, Number(k6Config.vus) || 1),
-        duration: (k6Config.duration || '30s').trim(),
+      const script = (k6Config.script || 'load_test.js').trim()
+      const duration = (k6Config.duration || '30s').trim()
+      const parsedVus = (k6Config.vusList || '')
+        .split(',')
+        .map(v => Number(v.trim()))
+        .filter(v => Number.isFinite(v) && v >= 1)
+      const vusValues = Array.from(new Set(parsedVus.map(v => Math.floor(v))))
+
+      if (!vusValues.length) {
+        toast('Enter one or more valid VU values (e.g., 2,4,8,16)', 'error')
+        return
       }
-      const res = await api.benchmarkRunK6(payload)
-      if (res.success) {
-        setK6Result(res.data)
-        toast('k6 load test complete', 'success')
-      } else {
-        toast(res.error || 'k6 load test failed', 'error')
+
+      const series = []
+      let lastResult = null
+      for (const vus of vusValues) {
+        const res = await api.benchmarkRunK6({ script, vus, duration })
+        if (!res.success) {
+          toast(res.error || `k6 load test failed for VUs=${vus}`, 'error')
+          return
+        }
+        lastResult = res.data
+        series.push({
+          vus,
+          throughput_ops_per_sec: Number(res.data?.throughput_ops_per_sec ?? 0),
+          http_reqs_per_sec: Number(res.data?.http_reqs_per_sec ?? 0),
+          success_rate_pct: Math.round(Number(res.data?.operation_success_rate ?? 0) * 100),
+        })
       }
+
+      setK6Series(series)
+      setK6Result(lastResult)
+      toast('k6 throughput sweep complete', 'success')
     } catch (err) {
       toast('k6 load test failed', 'error')
     } finally {
@@ -255,14 +277,12 @@ export default function PerformanceBenchmark() {
             />
           </div>
           <div className="form-group">
-            <label>VUs</label>
+            <label>VUs (comma-separated)</label>
             <input
               className="input"
-              type="number"
-              min={1}
-              max={1000}
-              value={k6Config.vus}
-              onChange={e => setK6Config(p => ({ ...p, vus: +e.target.value || 1 }))}
+              placeholder="2,4,8,16"
+              value={k6Config.vusList}
+              onChange={e => setK6Config(p => ({ ...p, vusList: e.target.value }))}
             />
           </div>
           <div className="form-group">
@@ -281,8 +301,26 @@ export default function PerformanceBenchmark() {
           disabled={k6Running}
           style={{ marginTop: 8 }}
         >
-          {k6Running ? '⏳ Running k6…' : '⚡ Run k6 Throughput Test'}
+          {k6Running ? '⏳ Running k6 sweep…' : '⚡ Run k6 Throughput Sweep'}
         </button>
+
+        {k6Series.length > 0 && (
+          <div style={{ marginTop: 18 }}>
+            <h4 style={{ marginBottom: 10 }}>Throughput vs VUs</h4>
+            <div style={{ width: '100%', height: 240 }}>
+              <ResponsiveContainer>
+                <BarChart data={k6Series} margin={{ top: 8, right: 20, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                  <XAxis dataKey="vus" stroke="#ccc" />
+                  <YAxis stroke="#ccc" />
+                  <RechartsTooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #333' }} />
+                  <Legend />
+                  <Bar dataKey="throughput_ops_per_sec" name="Throughput (ops/s)" fill="#3b82f6" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
 
         {k6Result && (
           <div style={{ marginTop: 14 }}>
@@ -298,7 +336,7 @@ export default function PerformanceBenchmark() {
               <div style={{ marginTop: 10, fontSize: 12, color: 'var(--warning)' }}>{k6Result.warning}</div>
             )}
             <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-              Script: {k6Result.script || 'load_test.js'} • VUs: {k6Result.vus ?? 0} • Duration: {k6Result.duration || '—'}
+              Last Run • VUs: {k6Result.vus ?? 0} • Duration: {k6Result.duration || '—'}
             </div>
           </div>
         )}
