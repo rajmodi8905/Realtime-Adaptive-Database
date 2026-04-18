@@ -343,9 +343,9 @@ class BenchmarkRunner:
         if mode == "custom_query":
             return self._run_custom_query_benchmark(config, warmup, iterations, label)
 
-        # For create mode, we must generate a fresh query each iteration to avoid
-        # duplicate primary key errors.  For other modes, build once and reuse.
-        is_create = mode == "create"
+        # For create and delete modes, we must generate a fresh query each iteration.
+        # Create avoids duplicate keys. Delete ensures a fresh record exists to be removed.
+        needs_fresh_queries = mode in ("create", "delete")
 
         # Build queries list based on mode (used directly for non-create modes)
         queries = self._build_mode_queries(mode, iterations)
@@ -354,7 +354,7 @@ class BenchmarkRunner:
 
         # Warmup
         for _ in range(warmup):
-            warmup_q = self._build_mode_queries(mode, 1) if is_create else queries[:min(len(queries), 3)]
+            warmup_q = self._build_mode_queries(mode, 1) if needs_fresh_queries else queries[:min(len(queries), 3)]
             for q in warmup_q:
                 try:
                     self._pipeline.execute_query(q)
@@ -379,8 +379,8 @@ class BenchmarkRunner:
         op_counts = {}
 
         for _ in range(iterations):
-            # For create, generate a fresh query with unique IDs each iteration
-            iter_queries = self._build_mode_queries(mode, 1) if is_create else queries
+            # For create/delete, generate a fresh query with unique IDs each iteration
+            iter_queries = self._build_mode_queries(mode, 1) if needs_fresh_queries else queries
             for q in iter_queries:
                 op_name = q.get("operation", "read")
                 op_counts[op_name] = op_counts.get(op_name, 0) + 1
