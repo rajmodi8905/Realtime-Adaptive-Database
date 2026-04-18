@@ -265,30 +265,7 @@ export default function ComparativeAnalysis() {
                 </div>
             )}
 
-            {/* Planned Queries Log */}
-            {latest.results.planned_queries && (
-                <div className="card">
-                    <div className="card-title">Framework Queries Executed</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                        {latest.results.planned_queries.sql?.length > 0 && (
-                            <div>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981' }}>SQL Queries ({latest.results.planned_queries.sql.length})</span>
-                            <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', marginTop: 4 }}>
-                                {JSON.stringify(latest.results.planned_queries.sql, null, 2)}
-                            </pre>
-                            </div>
-                        )}
-                        {latest.results.planned_queries.mongo?.length > 0 && (
-                            <div>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>MongoDB Operations ({latest.results.planned_queries.mongo.length})</span>
-                            <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', marginTop: 4 }}>
-                                {JSON.stringify(latest.results.planned_queries.mongo, null, 2)}
-                            </pre>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
+
             
             {/* Tabular Analysis Metrics */}
             <div className="card" style={{ gridColumn: '1 / -1' }}>

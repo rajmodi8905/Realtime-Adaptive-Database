@@ -431,27 +431,7 @@ export default function PerformanceBenchmark() {
             </div>
           )}
 
-          {latest.results?.planned_queries && (
-            <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)' }}>
-              <h4 style={{ marginBottom: 12, fontSize: 14 }}>Planned Queries (First Iteration)</h4>
-              {latest.results.planned_queries.sql?.length > 0 && (
-                <div style={{ marginBottom: 12 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981' }}>SQL ({latest.results.planned_queries.sql.length})</span>
-                  <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', marginTop: 4 }}>
-                    {JSON.stringify(latest.results.planned_queries.sql, null, 2)}
-                  </pre>
-                </div>
-              )}
-              {latest.results.planned_queries.mongo?.length > 0 && (
-                <div>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#f59e0b' }}>MongoDB ({latest.results.planned_queries.mongo.length})</span>
-                  <pre style={{ fontSize: 11, padding: 8, background: '#111', borderRadius: 4, overflowX: 'auto', marginTop: 4 }}>
-                    {JSON.stringify(latest.results.planned_queries.mongo, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
-          )}
+
         </div>
       )}
 
