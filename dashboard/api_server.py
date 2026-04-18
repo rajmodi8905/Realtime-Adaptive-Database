@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import random
+import secrets
 import sys
 import threading
 import time
@@ -49,6 +50,10 @@ _lock = threading.Lock()
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "assignment2_schema.template.json"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 METADATA_DIR = Path(__file__).resolve().parent.parent / "metadata"
+
+# ── user session store (in-memory, thread-safe) ──────────────────────────────
+_user_sessions: dict[str, dict[str, Any]] = {}   # token → session dict
+_user_sessions_lock = threading.Lock()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -344,6 +349,95 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR), html=True), name="st
 async def root():
     index = STATIC_DIR / "index.html"
     return HTMLResponse(index.read_text(encoding="utf-8"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AUTH ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    """Register a user session. Returns a session token."""
+    try:
+        body = await request.json()
+        username = (body.get("username") or "").strip()
+        if not username:
+            return _err("Username is required", 400)
+
+        token = secrets.token_hex(16)
+        client_host = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("user-agent", "unknown")
+
+        session_entry = {
+            "token": token,
+            "username": username,
+            "login_time": time.time(),
+            "ip": client_host,
+            "user_agent": user_agent,
+        }
+
+        with _user_sessions_lock:
+            _user_sessions[token] = session_entry
+
+        logger.info("User '%s' logged in from %s (token=%s…)", username, client_host, token[:8])
+        return _ok({"token": token, "username": username})
+    except Exception as exc:
+        return _err(str(exc), 500)
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    """Remove a user session by token."""
+    try:
+        body = await request.json()
+        token = (body.get("token") or "").strip()
+        if not token:
+            return _err("Token is required", 400)
+
+        with _user_sessions_lock:
+            removed = _user_sessions.pop(token, None)
+
+        if removed:
+            logger.info("User '%s' logged out (token=%s…)", removed["username"], token[:8])
+            return _ok({"logged_out": True})
+        return _err("Session not found", 404)
+    except Exception as exc:
+        return _err(str(exc), 500)
+
+
+@app.get("/api/auth/sessions")
+async def auth_sessions():
+    """Return all currently active user sessions."""
+    try:
+        now = time.time()
+        with _user_sessions_lock:
+            sessions = []
+            for s in _user_sessions.values():
+                duration_s = now - s["login_time"]
+                sessions.append({
+                    "username": s["username"],
+                    "login_time": s["login_time"],
+                    "login_time_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s["login_time"])),
+                    "duration_seconds": round(duration_s),
+                    "duration_display": _fmt_duration(duration_s),
+                    "ip": s["ip"],
+                    "user_agent": s["user_agent"],
+                })
+        return _ok({"count": len(sessions), "sessions": sessions})
+    except Exception as exc:
+        return _err(str(exc), 500)
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds into human-readable duration."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    h = s // 3600
+    m = (s % 3600) // 60
+    return f"{h}h {m}m"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

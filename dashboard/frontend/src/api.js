@@ -88,6 +88,11 @@ export const api = {
 
   // Evidence
   evidenceExport: () => get('/api/evidence/export'),
+
+  // Auth
+  authLogin: (username) => post('/api/auth/login', { username }),
+  authLogout: (token) => post('/api/auth/logout', { token }),
+  authSessions: () => get('/api/auth/sessions'),
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

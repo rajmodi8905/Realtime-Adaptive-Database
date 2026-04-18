@@ -1,5 +1,6 @@
 import { useRef, useCallback } from 'react'
 import { motion } from 'framer-motion'
+import { useAuth } from './AuthContext'
 
 // ── Data-driven navigation sections ─────────────────────────────────────────
 // Add new views: just add an entry here (and register component in App.jsx)
@@ -76,6 +77,8 @@ function RippleButton({ className, onClick, children, initial, animate, transiti
 }
 
 export default function Sidebar({ currentView, onNavigate, acidStatuses, onRunTest, onRunAll, acidRunning }) {
+  const { auth, logout } = useAuth()
+
   return (
     <nav className="sidebar" role="navigation" aria-label="Main navigation">
       {NAV_SECTIONS.map((sec, si) => (
@@ -132,6 +135,18 @@ export default function Sidebar({ currentView, onNavigate, acidStatuses, onRunTe
         <span className="sidebar-icon">🧪</span>
         <span>Test Results</span>
       </RippleButton>
+
+      {/* ── User / Logout ── */}
+      <div className="sidebar-user-section">
+        <div className="sidebar-user-info">
+          <span className="sidebar-user-avatar">{(auth?.username || '?')[0].toUpperCase()}</span>
+          <span className="sidebar-user-name">{auth?.username || 'User'}</span>
+        </div>
+        <button className="sidebar-logout-btn" onClick={logout} title="Sign out">
+          ↩ Logout
+        </button>
+      </div>
     </nav>
   )
 }
+

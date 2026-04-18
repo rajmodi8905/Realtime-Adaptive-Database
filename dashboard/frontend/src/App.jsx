@@ -3,9 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion'
 import Particles, { initParticlesEngine } from '@tsparticles/react'
 import { loadSlim } from '@tsparticles/slim'
 import { ToastProvider } from './components/Toast'
+import { AuthProvider, useAuth } from './components/AuthContext'
 import SessionBar from './components/SessionBar'
 import Sidebar from './components/Sidebar'
 import { api } from './api'
+import Login from './views/Login'
 
 // ── Lazy-loaded views ────────────────────────────────────────────────────────
 const BootstrapView = lazy(() => import('./views/BootstrapView'))
@@ -183,6 +185,7 @@ function Dashboard() {
           onRunAll={handleRunAll}
           acidRunning={acidRunning}
         />
+
         <main className="content">
           <AnimatePresence mode="wait">
             <motion.div key={view} variants={pageVariants} initial="initial" animate="animate" exit="exit">
@@ -197,10 +200,18 @@ function Dashboard() {
   )
 }
 
+function AuthGate() {
+  const { isAuthenticated } = useAuth()
+  if (!isAuthenticated) return <Login />
+  return <Dashboard />
+}
+
 export default function App() {
   return (
-    <ToastProvider>
-      <Dashboard />
-    </ToastProvider>
+    <AuthProvider>
+      <ToastProvider>
+        <AuthGate />
+      </ToastProvider>
+    </AuthProvider>
   )
 }
