@@ -36,59 +36,32 @@ Before launching the project, ensure your environment runs the following:
 
 All operations scale natively from the default installation. Execute everything below directly in root directory.
 
-### 1. Launch Hardware Infrastructures
-Start the persistent MySQL 8.0 and MongoDB 7.0 databases securely using Docker:
+### 1. Launch the Full Stack
+Start the databases, Python backend, and React frontend — all in one command:
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
-*(Verify databases are online with `docker-compose ps`)*
+*(Verify all services are online with `docker compose ps`)*
 
-### 2. Configure Python Environment
-It is highly recommended to isolate the python architecture in a virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-# Or on Windows: venv\Scripts\activate
-```
+### 2. Access the Dashboard
+The application is live. Open your browser and navigate to:
 
-Next, install all database adapters and dashboard server libraries securely:
-```bash
-pip install -r requirements.txt
-```
+**[http://localhost:8080](http://localhost:8080)**
 
 ---
 
-## 🚀 Running the UI Dashboard
+## 🚀 Running Load Tests
 
-The dashboard consists of a FastAPI backend and a Vite+React frontend.
-
-### 1. Start the Backend API
-In the root directory, launch the FastAPI server tracking the Multi-Backend Pipeline:
-```bash
-python -m dashboard.api_server
-```
-*The backend API will run on `http://localhost:8080`*
-
-### 2. Start the Frontend Application
-In a new terminal, navigate to the frontend directory, install dependencies, and start the Vite development server:
-```bash
-cd dashboard/frontend
-npm install
-npm run dev
-```
-**Access the dashboard by opening your browser to the Local URL provided by Vite (typically [http://localhost:5173/static/](http://localhost:5173/static/))**
-
-### Optional: Use Docker for Frontend and k6
-If you prefer containerized tooling, the compose file now includes optional profiles for the Vite frontend and the k6 load-test runner.
+To run the automated k6 load test against the running stack, use the `loadtest` profile:
 
 ```bash
-docker compose --profile frontend up frontend-dev
 docker compose --profile loadtest run --rm k6
 ```
 
-These optional containers default to `http://host.docker.internal:8080`, so keep the backend running on the host or override `VITE_API_PROXY_TARGET` and `LOAD_TEST_BASE_URL` if needed.
+> **Note:** The database must be bootstrapped first (Step 1 of the Usage Guide below) before running the load test.
 
 ---
+
 
 ## 📖 Usage Guide
 
