@@ -24,6 +24,19 @@ Assignment-specific deep dives are in:
 
 ---
 
+## 📁 Repository Structure
+
+The codebase is organized into logical domains for clean separation of concerns:
+
+- **`src/query_engine/`**: (Formerly `a2`) Handles SQL normalization, MongoDB document decomposition, dynamic schema generation, and storage strategy distribution.
+- **`src/transaction/`**: (Formerly `a3`) The Multi-Backend Pipeline Coordinator, managing cross-database ACID compliance, row locking, state rollback, and concurrency.
+- **`benchmarks/`**: Contains the `k6` automated load testing scripts (e.g., `load_test.js`) used to measure the hybrid database's throughput.
+- **`scripts/`**: Executable scripts for interacting with the database or simulating ingestion streams (e.g., `run_pipeline.py`).
+- **`tests/`**: Unit tests and E2E tests (including Pytest and Puppeteer suites) to validate concurrency locks and UI functionality.
+- **`dashboard/`**: The FastAPI server and Vite+React frontend that drives the web interface.
+
+---
+
 ## 🛠 Prerequisites
 
 Before launching the project, ensure your environment runs the following:
