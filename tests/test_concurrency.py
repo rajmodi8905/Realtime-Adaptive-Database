@@ -57,7 +57,7 @@ def _check(condition: bool, label: str) -> bool:
 
 def run_unit_tests() -> bool:
     _section("PART 1 · Unit Tests  (lock primitives — no DB)")
-    from src.a3.concurrency_manager import ConcurrencyManager, LockTimeoutError
+    from src.transaction.concurrency_manager import ConcurrencyManager, LockTimeoutError
 
     all_ok = True
 
@@ -267,9 +267,9 @@ def run_e2e_tests() -> bool:
 
     import json
     from pathlib import Path
-    from src.a2.contracts import CrudOperation, SchemaRegistration
-    from src.a3.orchestrator import Assignment3Pipeline
-    from src.a3.concurrency_manager import LockTimeoutError
+    from src.query_engine.contracts import CrudOperation, SchemaRegistration
+    from src.transaction.orchestrator import Assignment3Pipeline
+    from src.transaction.concurrency_manager import LockTimeoutError
     from src.config import get_config
     from src.persistence.metadata_store import MetadataStore
 
@@ -451,7 +451,7 @@ def run_e2e_tests() -> bool:
 # ── Helpers for E2E tests ────────────────────────────────────────────
 
 def _build_e2e_record(tag: str, field_locations) -> dict[str, Any]:
-    from src.a2.contracts import FieldLocation
+    from src.query_engine.contracts import FieldLocation
     record: dict[str, Any] = {}
     for loc in field_locations:
         path = loc.field_path

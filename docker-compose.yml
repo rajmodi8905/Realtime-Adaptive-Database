@@ -80,7 +80,7 @@ services:
     environment:
       BASE_URL: ${LOAD_TEST_BASE_URL:-http://app:8080}
     entrypoint: ["k6"]
-    command: ["run", "/workspace/load_test.js"]
+    command: ["run", "/workspace/benchmarks/load_test.js"]
 
   # ==============================================
   # Data Stream API (from course resources)

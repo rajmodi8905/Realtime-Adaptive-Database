@@ -15,8 +15,8 @@ import random
 import sys
 from pathlib import Path
 
-from src.a2.contracts import CrudOperation, SchemaRegistration
-from src.a2.orchestrator import Assignment2Pipeline
+from src.query_engine.contracts import CrudOperation, SchemaRegistration
+from src.query_engine.orchestrator import Assignment2Pipeline
 from src.config import get_config
 from src.persistence.metadata_store import MetadataStore
 

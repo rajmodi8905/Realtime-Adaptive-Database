@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.a2.contracts import CrudOperation, FieldLocation
-from src.a2.crud_engine import CrudEngine
-from src.a2.query_planner import QueryPlanner
+from src.query_engine.contracts import CrudOperation, FieldLocation
+from src.query_engine.crud_engine import CrudEngine
+from src.query_engine.query_planner import QueryPlanner
 
 from .contracts import LogicalEntity
 

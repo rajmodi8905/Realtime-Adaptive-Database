@@ -38,8 +38,8 @@ from fastapi.staticfiles import StaticFiles
 # ── project imports ───────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.a2.contracts import CrudOperation, SchemaRegistration
-from src.a3.orchestrator import Assignment3Pipeline
+from src.query_engine.contracts import CrudOperation, SchemaRegistration
+from src.transaction.orchestrator import Assignment3Pipeline
 from src.config import get_config
 from src.persistence.metadata_store import MetadataStore
 

@@ -4,8 +4,8 @@ import logging
 import time
 from typing import Any, Optional
 
-from src.a2.contracts import CrudOperation, FieldLocation
-from src.a2.orchestrator import Assignment2Pipeline
+from src.query_engine.contracts import CrudOperation, FieldLocation
+from src.query_engine.orchestrator import Assignment2Pipeline
 from src.config import AppConfig, get_config
 
 from .acid_experiments import AcidExperimentRunner

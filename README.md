@@ -18,9 +18,9 @@ For a structured documentation set, start here:
 
 Assignment-specific deep dives are in:
 
-- [Assignment 1 README](assignment_wise_readme/Assignment1_README.md)
-- [Assignment 2 README](assignment_wise_readme/Assignment2_README.md)
-- [Assignment 3 README](assignment_wise_readme/assignment3_README.md)
+- [Assignment 1 README](docs/assignments/assignment1.md)
+- [Assignment 2 README](docs/assignments/assignment2.md)
+- [Assignment 3 README](docs/assignments/assignment3.md)
 
 ---
 

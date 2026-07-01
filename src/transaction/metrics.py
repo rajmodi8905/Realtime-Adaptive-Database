@@ -364,7 +364,7 @@ class BenchmarkRunner:
         # Pre-compute execution breakdown keys
         breakdowns = {"metadata_lookup_ms": 0, "query_plan_ms": 0, "sql_ms": 0, "mongo_ms": 0, "merge_ms": 0}
         try:
-            from src.a2.contracts import CrudOperation
+            from src.query_engine.contracts import CrudOperation
             q0 = queries[0]
             op = q0.get("operation", "read")
             payload = {k: v for k, v in q0.items() if k != "operation"}
@@ -548,7 +548,7 @@ class BenchmarkRunner:
 
         # Get planned queries for display
         try:
-            from src.a2.contracts import CrudOperation
+            from src.query_engine.contracts import CrudOperation
             op_str = user_query.get("operation", "read")
             payload = {k: v for k, v in user_query.items() if k != "operation"}
             plan = self._pipeline.a2.preview_plan(CrudOperation(op_str), payload)
@@ -742,7 +742,7 @@ class BenchmarkRunner:
 
         breakdowns = {"metadata_lookup_ms": 0, "query_plan_ms": 0, "sql_ms": 0, "mongo_ms": 0, "merge_ms": 0}
         try:
-            from src.a2.contracts import CrudOperation
+            from src.query_engine.contracts import CrudOperation
             op = logical_query.get("operation", "read")
             payload = {k: v for k, v in logical_query.items() if k != "operation"}
             plan = self._pipeline.a2.preview_plan(CrudOperation(op), payload)

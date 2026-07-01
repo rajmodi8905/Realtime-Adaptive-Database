@@ -5,9 +5,9 @@ import time
 from copy import deepcopy
 from typing import Any, Optional
 
-from src.a2.contracts import CrudOperation, FieldLocation, QueryPlan
-from src.a2.crud_engine import CrudEngine
-from src.a2.query_planner import QueryPlanner
+from src.query_engine.contracts import CrudOperation, FieldLocation, QueryPlan
+from src.query_engine.crud_engine import CrudEngine
+from src.query_engine.query_planner import QueryPlanner
 
 from .concurrency_manager import ConcurrencyManager
 from .contracts import TransactionResult

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from src.a2.contracts import FieldLocation
-from src.a2.metadata_catalog import MetadataCatalog
+from src.query_engine.contracts import FieldLocation
+from src.query_engine.metadata_catalog import MetadataCatalog
 
 from .contracts import SessionInfo
 

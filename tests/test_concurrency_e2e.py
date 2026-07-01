@@ -66,7 +66,7 @@ SCHEMA_PATH = Path("schemas/assignment2_schema.template.json")
 
 
 def load_registration():
-    from src.a2.contracts import SchemaRegistration
+    from src.query_engine.contracts import SchemaRegistration
     data = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     return SchemaRegistration(
         schema_name=data["schema_name"],
@@ -162,7 +162,7 @@ def _extract_title(rec: dict) -> str | None:
 
 def read_title(pipeline, username_field, tag, field_locations) -> str | None:
     """Read the title field for a record identified by tag."""
-    from src.a2.contracts import CrudOperation
+    from src.query_engine.contracts import CrudOperation
     res = pipeline.execute_transactional(
         CrudOperation.READ,
         {"filters": {username_field: tag}, "limit": 1},
@@ -183,8 +183,8 @@ def bootstrap():
 
     Returns (Assignment3Pipeline, field_locations, records).
     """
-    from src.a2.contracts import CrudOperation
-    from src.a3.orchestrator import Assignment3Pipeline
+    from src.query_engine.contracts import CrudOperation
+    from src.transaction.orchestrator import Assignment3Pipeline
     from src.config import get_config
     from src.persistence.metadata_store import MetadataStore
 
@@ -264,7 +264,7 @@ def bootstrap():
 
 def test_concurrent_updates(pipeline, field_locations) -> bool:
     """Test 1: Two threads update the same record — no lost update."""
-    from src.a2.contracts import CrudOperation
+    from src.query_engine.contracts import CrudOperation
 
     _section("TEST 1 · Lost Update Prevention (2 concurrent writers)")
 
@@ -318,7 +318,7 @@ def test_concurrent_updates(pipeline, field_locations) -> bool:
 
 def test_five_way_contention(pipeline, field_locations) -> bool:
     """Test 2: 5 threads all update the same record simultaneously."""
-    from src.a2.contracts import CrudOperation
+    from src.query_engine.contracts import CrudOperation
 
     _section("TEST 2 · 5-Way Write Contention")
 
@@ -375,7 +375,7 @@ def test_five_way_contention(pipeline, field_locations) -> bool:
 
 def test_dirty_read_prevention(pipeline, field_locations) -> bool:
     """Test 3: Reader during write sees only committed state."""
-    from src.a2.contracts import CrudOperation
+    from src.query_engine.contracts import CrudOperation
 
     _section("TEST 3 · Dirty Read Prevention")
 
@@ -447,7 +447,7 @@ def test_dirty_read_prevention(pipeline, field_locations) -> bool:
 
 def test_concurrent_reads(pipeline, field_locations, existing_username: str) -> bool:
     """Test 4: Multiple readers run in parallel without blocking."""
-    from src.a2.contracts import CrudOperation
+    from src.query_engine.contracts import CrudOperation
 
     _section("TEST 4 · Concurrent Reads (4 readers, no blocking)")
 
@@ -485,7 +485,7 @@ def test_concurrent_reads(pipeline, field_locations, existing_username: str) -> 
 
 def test_read_write_isolation(pipeline, field_locations) -> bool:
     """Test 5: Concurrent read + write on same entity — both succeed, reader sees consistent state."""
-    from src.a2.contracts import CrudOperation
+    from src.query_engine.contracts import CrudOperation
 
     _section("TEST 5 · Read/Write Isolation (reader during writer)")
 
@@ -547,7 +547,7 @@ def test_read_write_isolation(pipeline, field_locations) -> bool:
 
 def test_lock_key_observability(pipeline, field_locations) -> bool:
     """Test 6: TransactionResult.lock_key is populated."""
-    from src.a2.contracts import CrudOperation
+    from src.query_engine.contracts import CrudOperation
 
     _section("TEST 6 · Lock Key Observability")
 

@@ -25,8 +25,8 @@ The project combines:
 - `src/normalization/`: type detection and record normalization.
 - `src/storage/`: MySQL/Mongo clients and low-level routing.
 - `src/persistence/`: metadata persistence.
-- `src/a2/`: schema registry, planner, CRUD engine, and orchestration.
-- `src/a3/`: transaction coordinator, lock manager, ACID experiments.
+- `src/query_engine/`: schema registry, planner, CRUD engine, and orchestration.
+- `src/transaction/`: transaction coordinator, lock manager, ACID experiments.
 - `dashboard/api_server.py`: FastAPI logical API and static serving.
 - `dashboard/frontend/`: Vite + React frontend.
 - `metadata/`: generated schema, plans, and query history artifacts.
