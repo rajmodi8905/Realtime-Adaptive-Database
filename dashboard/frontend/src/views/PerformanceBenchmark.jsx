@@ -32,7 +32,7 @@ export default function PerformanceBenchmark() {
   const [k6Result, setK6Result] = useState(null)
   const [k6Series, setK6Series] = useState([])
   const [k6Config, setK6Config] = useState({
-    script: 'load_test.js',
+    script: 'benchmarks/load_test.js',
     vusList: '2,4,8,16',
     duration: '30s',
   })

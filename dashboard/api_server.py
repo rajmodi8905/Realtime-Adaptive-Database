@@ -755,7 +755,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _resolve_k6_script(script_name: str) -> Path:
-    script = (script_name or "load_test.js").strip()
+    script = (script_name or "benchmarks/load_test.js").strip()
+    if script == "load_test.js":
+        script = "benchmarks/load_test.js"
     candidate = Path(script)
     if not candidate.is_absolute():
         candidate = (REPO_ROOT / candidate).resolve()
