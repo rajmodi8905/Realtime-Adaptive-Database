@@ -1,0 +1,26 @@
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Node
+node_modules/
+npm-debug.log
+dashboard/frontend/dist/
+dashboard/static/
+
+# IDEs
+.vscode/
+.idea/
+
+# Local metadata
+metadata/

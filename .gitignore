@@ -82,3 +82,8 @@ docker-compose.override.yml
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend build output (always rebuilt fresh by Docker)
+dashboard/static/
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
